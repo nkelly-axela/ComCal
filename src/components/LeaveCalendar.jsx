@@ -57,12 +57,14 @@ export default function LeaveCalendar() {
     setError(null)
     const monthStart = new Date(year, month, 1)
     const monthEnd = new Date(year, month + 1, 0)
+
+    // Use explicit FK hint to avoid ambiguity with approver_id FK
     const { data, error } = await supabase
       .from('leave_requests')
       .select(`
         id, start_date, end_date, days_requested, status, user_id, leave_type_id,
         leave_types ( name, color ),
-        users ( full_name, department, role )
+        user:users!leave_requests_user_id_fkey ( full_name, department, role )
       `)
       .eq('status', 'approved')
       .gte('end_date', ymd(monthStart))
@@ -71,14 +73,13 @@ export default function LeaveCalendar() {
 
     if (error) {
       // If the `department` column doesn't exist yet, retry without it
-      // so the calendar still works in a partial schema.
       if (/column .*department/i.test(error.message)) {
         const retry = await supabase
           .from('leave_requests')
           .select(`
             id, start_date, end_date, days_requested, status, user_id, leave_type_id,
             leave_types ( name, color ),
-            users ( full_name, role )
+            user:users!leave_requests_user_id_fkey ( full_name, role )
           `)
           .eq('status', 'approved')
           .gte('end_date', ymd(monthStart))
@@ -100,7 +101,7 @@ export default function LeaveCalendar() {
   // ── Filter options derived from current data ────────────────
   const departments = useMemo(() => {
     const set = new Set()
-    requests.forEach(r => set.add(r.users?.department ?? 'Unassigned'))
+    requests.forEach(r => set.add(r.user?.department ?? 'Unassigned'))
     return Array.from(set).sort()
   }, [requests])
 
@@ -117,7 +118,7 @@ export default function LeaveCalendar() {
   // ── Apply filters ───────────────────────────────────────────
   const filtered = useMemo(() => {
     return requests.filter(r => {
-      const dept = r.users?.department ?? 'Unassigned'
+      const dept = r.user?.department ?? 'Unassigned'
       if (deptFilter !== 'all' && dept !== deptFilter) return false
       if (typeFilter !== 'all' && r.leave_type_id !== typeFilter) return false
       return true
@@ -193,122 +194,101 @@ export default function LeaveCalendar() {
 // ═══════════════════════════════════════════════════════════════
 
 function TimelineView({ requests, year, month, dim }) {
+  const today = new Date()
+  const monthStart = new Date(year, month, 1)
+  const monthEnd = new Date(year, month + 1, 0)
+
   // Group by department then by user
   const grouped = useMemo(() => {
     const byDept = {}
     requests.forEach(r => {
-      const dept = r.users?.department ?? 'Unassigned'
+      const dept = r.user?.department ?? 'Unassigned'
       const uid = r.user_id
       if (!byDept[dept]) byDept[dept] = {}
       if (!byDept[dept][uid]) {
         byDept[dept][uid] = {
           id: uid,
-          name: r.users?.full_name ?? 'Unknown',
-          role: r.users?.role,
-          dept,
+          name: r.user?.full_name ?? 'Unknown',
+          role: r.user?.role,
           requests: [],
         }
       }
       byDept[dept][uid].requests.push(r)
     })
-    return Object.entries(byDept)
-      .sort(([a], [b]) => a.localeCompare(b))
-      .map(([dept, users]) => ({
-        dept,
-        users: Object.values(users).sort((a, b) => a.name.localeCompare(b.name)),
-      }))
+    return Object.entries(byDept).map(([dept, users]) => ({
+      dept,
+      users: Object.values(users),
+    }))
   }, [requests])
 
-  // Day metadata (label, weekend flag, today flag)
-  const days = useMemo(() => {
-    const out = []
-    const todayStr = ymd(new Date())
-    for (let i = 1; i <= dim; i++) {
-      const d = new Date(year, month, i)
-      out.push({
-        day: i,
-        label: DOW_SHORT[(d.getDay() + 6) % 7], // Mon = 0
-        weekend: isWeekend(d),
-        isToday: ymd(d) === todayStr,
-      })
-    }
-    return out
-  }, [year, month, dim])
-
-  const NAME_COL = 220
-  const dayMinWidth = 28
+  const days = useMemo(() => Array.from({ length: dim }, (_, i) => {
+    const d = new Date(year, month, i + 1)
+    return { day: i + 1, weekend: isWeekend(d) }
+  }), [year, month, dim])
 
   return (
-    <div style={{ overflowX: 'auto', border: '0.5px solid #e5e7eb', borderRadius: 8 }}>
-      <div style={{ minWidth: NAME_COL + dim * dayMinWidth }}>
-
-        {/* Day header row */}
-        <div style={{ display: 'flex', borderBottom: '0.5px solid #e5e7eb' }}>
-          <div style={{
-            width: NAME_COL, flexShrink: 0,
-            padding: '8px 12px', background: '#fafafa',
-            fontSize: 11, color: '#6b7280', textTransform: 'uppercase', letterSpacing: '0.06em',
-          }}>Team</div>
-          <div style={{ display: 'grid', gridTemplateColumns: `repeat(${dim}, 1fr)`, flex: 1 }}>
-            {days.map(d => (
-              <div key={d.day} style={{
-                textAlign: 'center', padding: '4px 0',
-                background: d.weekend ? '#f3f4f6' : '#fafafa',
-                borderLeft: '0.5px solid #e5e7eb',
-              }}>
-                <div style={{ fontSize: 9, color: '#9ca3af', textTransform: 'uppercase' }}>{d.label}</div>
-                <div style={{
-                  fontSize: 12, fontWeight: 500,
-                  color: d.isToday ? '#fff' : '#374151',
-                  background: d.isToday ? '#1D9E75' : 'transparent',
-                  width: 18, height: 18, lineHeight: '18px',
-                  borderRadius: '50%', display: 'inline-block',
-                }}>{d.day}</div>
-              </div>
-            ))}
-          </div>
+    <div style={{ border: '0.5px solid #e5e7eb', borderRadius: 8, overflow: 'hidden' }}>
+      {/* Day header */}
+      <div style={{ display: 'flex', borderBottom: '0.5px solid #e5e7eb', background: '#fafafa' }}>
+        <div style={{ minWidth: 180, padding: '6px 12px', fontSize: 11, color: '#6b7280', fontWeight: 500, flexShrink: 0 }}>
+          Person
         </div>
-
-        {/* Department + user rows */}
-        {grouped.map(({ dept, users }) => (
-          <Fragment key={dept}>
-            <div style={{
-              padding: '6px 12px',
-              background: '#f9fafb',
-              fontSize: 11, fontWeight: 600, color: '#6b7280',
-              textTransform: 'uppercase', letterSpacing: '0.06em',
-              borderTop: '0.5px solid #e5e7eb',
-              borderBottom: '0.5px solid #e5e7eb',
-            }}>
-              {dept} <span style={{ color: '#9ca3af', fontWeight: 400 }}>· {users.length}</span>
-            </div>
-            {users.map(u => (
-              <UserRow key={u.id}
-                user={u} days={days} dim={dim}
-                year={year} month={month}
-                nameColWidth={NAME_COL}
-              />
-            ))}
-          </Fragment>
-        ))}
+        <div style={{ display: 'grid', gridTemplateColumns: `repeat(${dim}, 1fr)`, flex: 1 }}>
+          {days.map(d => {
+            const isToday = year === today.getFullYear() && month === today.getMonth() && d.day === today.getDate()
+            return (
+              <div key={d.day} style={{
+                fontSize: 10, textAlign: 'center', padding: '6px 0',
+                color: isToday ? '#1D9E75' : d.weekend ? '#d1d5db' : '#6b7280',
+                fontWeight: isToday ? 700 : 400,
+                background: d.weekend ? '#f3f4f6' : undefined,
+              }}>
+                {d.day}
+              </div>
+            )
+          })}
+        </div>
       </div>
+
+      {/* Dept groups */}
+      {grouped.map(({ dept, users }) => (
+        <Fragment key={dept}>
+          <div style={{
+            padding: '4px 12px', fontSize: 10, fontWeight: 600,
+            color: '#9ca3af', background: '#fafafa',
+            borderBottom: '0.5px solid #f3f4f6',
+            textTransform: 'uppercase', letterSpacing: '0.05em',
+          }}>
+            {dept}
+          </div>
+          {users.map(user => (
+            <UserRow
+              key={user.id}
+              user={user}
+              days={days}
+              dim={dim}
+              monthStart={monthStart}
+              monthEnd={monthEnd}
+            />
+          ))}
+        </Fragment>
+      ))}
     </div>
   )
 }
 
-function UserRow({ user, days, dim, year, month, nameColWidth }) {
-  const monthStart = new Date(year, month, 1)
-  const monthEnd = new Date(year, month + 1, 0)
-
+function UserRow({ user, days, dim, monthStart, monthEnd }) {
   return (
-    <div style={{ display: 'flex', borderTop: '0.5px solid #f3f4f6' }}>
+    <div style={{ display: 'flex', borderBottom: '0.5px solid #f3f4f6', minHeight: 44 }}>
       <div style={{
-        width: nameColWidth, flexShrink: 0,
-        padding: '8px 12px', background: '#fff',
+        minWidth: 180, maxWidth: 180, padding: '0 12px',
+        display: 'flex', flexDirection: 'column', justifyContent: 'center',
+        flexShrink: 0,
       }}>
-        <div style={{ fontSize: 13, fontWeight: 500 }}>{user.name}</div>
-        <div style={{ fontSize: 11, color: '#9ca3af', display: 'flex', gap: 6 }}>
-          <span>{user.dept}</span>
+        <div style={{ fontSize: 13, fontWeight: 500, color: '#111', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+          {user.name}
+        </div>
+        <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 1 }}>
           {user.role && <span style={{ textTransform: 'capitalize', color: '#d1d5db' }}>· {user.role}</span>}
         </div>
       </div>
@@ -365,7 +345,6 @@ function UserRow({ user, days, dim, year, month, nameColWidth }) {
 // ═══════════════════════════════════════════════════════════════
 
 function MonthGridView({ requests, year, month, dim }) {
-  // Map: day-of-month → list of requests covering that day
   const dayMap = useMemo(() => {
     const monthStart = new Date(year, month, 1)
     const monthEnd = new Date(year, month + 1, 0)
@@ -381,9 +360,8 @@ function MonthGridView({ requests, year, month, dim }) {
     return out
   }, [requests, year, month, dim])
 
-  // Build cell list (Mon-first, with leading/trailing blanks to fill weeks)
   const cells = useMemo(() => {
-    const firstDow = (new Date(year, month, 1).getDay() + 6) % 7 // Mon = 0
+    const firstDow = (new Date(year, month, 1).getDay() + 6) % 7
     const arr = []
     for (let i = 0; i < firstDow; i++) arr.push(null)
     for (let i = 1; i <= dim; i++) arr.push(i)
@@ -436,12 +414,12 @@ function MonthGridView({ requests, year, month, dim }) {
                   padding: '2px 6px', borderRadius: 3,
                   whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
                 }} title={
-                  `${r.users?.full_name}` +
-                  `${r.users?.department ? ` (${r.users.department})` : ''}\n` +
+                  `${r.user?.full_name}` +
+                  `${r.user?.department ? ` (${r.user.department})` : ''}\n` +
                   `${r.leave_types?.name ?? 'Leave'}\n` +
                   `${fmtDate(r.start_date)} → ${fmtDate(r.end_date)}`
                 }>
-                  {compactName(r.users?.full_name)}
+                  {compactName(r.user?.full_name)}
                 </div>
               ))}
               {items.length > 3 && (
