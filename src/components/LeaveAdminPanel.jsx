@@ -850,7 +850,9 @@ export default function LeaveAdminPanel() {
                       value={holidayYearStart.split('-')[0]}
                       onChange={e => {
                         const month = e.target.value
-                        const day = holidayYearStart.split('-')[1] ?? '01'
+                        const currentDay = parseInt(holidayYearStart.split('-')[1] ?? '1')
+                        const maxDays = new Date(2000, parseInt(month), 0).getDate()
+                        const day = String(Math.min(currentDay, maxDays)).padStart(2, '0')
                         saveHolidayYearStart(`${month}-${day}`)
                       }}
                       style={{ ...selectStyle, width: 160 }}
@@ -874,9 +876,16 @@ export default function LeaveAdminPanel() {
                       }}
                       style={{ ...selectStyle, width: 100 }}
                     >
-                      {Array.from({ length: 28 }, (_, i) => String(i + 1).padStart(2, '0')).map(d => (
-                        <option key={d} value={d}>{parseInt(d)}</option>
-                      ))}
+                      {(() => {
+                        const month = parseInt(holidayYearStart.split('-')[0] ?? '1')
+                        // Use year 2000 (leap year) to get correct Feb days
+                        const daysInMonth = new Date(2000, month, 0).getDate()
+                        return Array.from({ length: daysInMonth }, (_, i) =>
+                          String(i + 1).padStart(2, '0')
+                        ).map(d => (
+                          <option key={d} value={d}>{parseInt(d)}</option>
+                        ))
+                      })()}
                     </select>
                   </div>
                   <div style={{ fontSize: 12, color: '#6b7280', paddingBottom: 6 }}>
