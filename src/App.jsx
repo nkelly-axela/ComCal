@@ -14,10 +14,11 @@ import Login from './components/Login'
 import LeaveUserPanel from './components/LeaveUserPanel'
 import LeaveAdminPanel from './components/LeaveAdminPanel'
 import LeaveCalendar from './components/LeaveCalendar'
+import LeaveReportsPanel from './components/LeaveReportsPanel'
 
 export default function App() {
   const { user, profile, loading, signOut } = useAuth()
-  const [view, setView] = useState('user') // 'user' | 'calendar' | 'admin'
+  const [view, setView] = useState('user') // 'user' | 'calendar' | 'admin' | 'reports'
 
   if (loading) {
     return <CenteredCard>Loading…</CenteredCard>
@@ -41,8 +42,7 @@ export default function App() {
   }
 
   const isAdmin = profile.role === 'admin' || profile.role === 'manager'
-  // Defensive: fall back to user view if a non-admin somehow ends up here
-  const safeView = view === 'admin' && !isAdmin ? 'user' : view
+  const safeView = (view === 'admin' || view === 'reports') && !isAdmin ? 'user' : view
 
   return (
     <div style={{ minHeight: '100vh', background: '#f5f5f4' }}>
@@ -56,6 +56,7 @@ export default function App() {
       <div style={{ padding: '1.5rem', maxWidth: 1200, margin: '0 auto' }}>
         {safeView === 'admin' && <LeaveAdminPanel />}
         {safeView === 'calendar' && <LeaveCalendar />}
+        {safeView === 'reports' && <LeaveReportsPanel />}
         {safeView === 'user' && (
           <LeaveUserPanel
             userId={user.id}
@@ -83,6 +84,9 @@ function TopBar({ profile, view, setView, isAdmin, signOut }) {
           <TabBtn active={view === 'calendar'} onClick={() => setView('calendar')}>Team calendar</TabBtn>
           {isAdmin && (
             <TabBtn active={view === 'admin'} onClick={() => setView('admin')}>Admin</TabBtn>
+          )}
+          {isAdmin && (
+            <TabBtn active={view === 'reports'} onClick={() => setView('reports')}>Reports</TabBtn>
           )}
         </nav>
       </div>
