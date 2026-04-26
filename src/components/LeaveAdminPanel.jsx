@@ -224,6 +224,9 @@ export default function LeaveAdminPanel() {
   const [seedLoading, setSeedLoading] = useState(false)
   const [toast, setToast] = useState(null)
 
+  const [holidayYearStart, setHolidayYearStart] = useState('01-01')
+  const [holidayYearSaving, setHolidayYearSaving] = useState(false)
+
   const showToast = (msg, type = 'success') => {
     setToast({ msg, type })
     setTimeout(() => setToast(null), 3000)
@@ -350,6 +353,38 @@ export default function LeaveAdminPanel() {
     }
   }
 
+  const loadSettings = useCallback(async () => {
+    try {
+      const { data } = await supabase
+        .from('company_settings')
+        .select('key, value')
+      if (data) {
+        const hys = data.find(s => s.key === 'holiday_year_start')
+        if (hys) setHolidayYearStart(hys.value)
+      }
+    } catch (e) {
+      // Settings table may not exist yet — silently ignore
+    }
+  }, [])
+
+  const saveHolidayYearStart = async (value) => {
+    setHolidayYearSaving(true)
+    try {
+      const { data: { user } } = await supabase.auth.getUser()
+      const { error } = await supabase
+        .from('company_settings')
+        .upsert({ key: 'holiday_year_start', value, updated_by: user?.id, updated_at: new Date().toISOString() },
+          { onConflict: 'key' })
+      if (error) throw error
+      setHolidayYearStart(value)
+      showToast('Holiday year start saved')
+    } catch (e) {
+      showToast(e.message, 'error')
+    } finally {
+      setHolidayYearSaving(false)
+    }
+  }
+
   const loadLeaveTypes = useCallback(async () => {
     setLtLoading(true)
     try {
@@ -407,6 +442,7 @@ export default function LeaveAdminPanel() {
   }, [])
 
   useEffect(() => {
+    loadSettings()
     loadLeaveTypes()
     loadEntitlements()
     loadAllowances(alYear)
@@ -414,7 +450,7 @@ export default function LeaveAdminPanel() {
     loadRequests()
     loadAuditLog()
     loadEmpList()
-  }, [loadLeaveTypes, loadEntitlements, loadAllowances, loadEmployees, loadRequests, loadAuditLog, loadEmpList, alYear])
+  }, [loadSettings, loadLeaveTypes, loadEntitlements, loadAllowances, loadEmployees, loadRequests, loadAuditLog, loadEmpList, alYear])
 
   const saveLeaveType = async () => {
     if (!ltForm.name.trim()) return
@@ -796,6 +832,62 @@ export default function LeaveAdminPanel() {
                   )
                 })}
               </Table>
+
+              {/* ── Holiday year settings ── */}
+              <div style={{
+                marginTop: '1.5rem',
+                border: '0.5px solid #e5e7eb', borderRadius: 10,
+                padding: '1.25rem', background: '#fafafa',
+              }}>
+                <div style={{ fontSize: 14, fontWeight: 500, marginBottom: 4 }}>Holiday year settings</div>
+                <div style={{ fontSize: 12, color: '#6b7280', marginBottom: '1rem' }}>
+                  Set when the holiday year starts. This affects how allowances and balances are calculated.
+                </div>
+                <div style={{ display: 'flex', alignItems: 'flex-end', gap: 12, flexWrap: 'wrap' }}>
+                  <div>
+                    <label style={{ display: 'block', fontSize: 11, color: '#6b7280', marginBottom: 4 }}>Start month</label>
+                    <select
+                      value={holidayYearStart.split('-')[0]}
+                      onChange={e => {
+                        const month = e.target.value
+                        const day = holidayYearStart.split('-')[1] ?? '01'
+                        saveHolidayYearStart(`${month}-${day}`)
+                      }}
+                      style={{ ...selectStyle, width: 160 }}
+                    >
+                      {[
+                        ['01','January'],['02','February'],['03','March'],['04','April'],
+                        ['05','May'],['06','June'],['07','July'],['08','August'],
+                        ['09','September'],['10','October'],['11','November'],['12','December'],
+                      ].map(([val, label]) => (
+                        <option key={val} value={val}>{label}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label style={{ display: 'block', fontSize: 11, color: '#6b7280', marginBottom: 4 }}>Start day</label>
+                    <select
+                      value={holidayYearStart.split('-')[1] ?? '01'}
+                      onChange={e => {
+                        const month = holidayYearStart.split('-')[0]
+                        saveHolidayYearStart(`${month}-${e.target.value}`)
+                      }}
+                      style={{ ...selectStyle, width: 100 }}
+                    >
+                      {Array.from({ length: 28 }, (_, i) => String(i + 1).padStart(2, '0')).map(d => (
+                        <option key={d} value={d}>{parseInt(d)}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div style={{ fontSize: 12, color: '#6b7280', paddingBottom: 6 }}>
+                    {holidayYearSaving ? 'Saving…' : (
+                      <>Current: <strong>
+                        {new Date(`2000-${holidayYearStart}`).toLocaleDateString('en-GB', { day: 'numeric', month: 'long' })}
+                      </strong> each year</>
+                    )}
+                  </div>
+                </div>
+              </div>
             </div>
           )}
 
