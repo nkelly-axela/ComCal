@@ -8,98 +8,107 @@
  * ─────────────────────────────────────────────────────────────
  */
 
-import { useEffect, useState, useRef } from 'react'
+import { useEffect, useState, useRef, useCallback } from 'react'
 import { supabase } from '../lib/supabase'
+
+// Defined outside the hook so it never gets recreated and never
+// closes over stale refs.
+async function fetchProfile(uid) {
+  // Explicitly select only scalar columns. manager_id is a FK so
+  // PostgREST will try to embed it as a relation — omitting it here
+  // avoids a silent null return that causes "Account not linked".
+  let { data, error } = await supabase
+    .from('users')
+    .select('id, full_name, role, department, company')
+    .eq('id', uid)
+    .maybeSingle()
+
+  // Fallback if department/company columns don't exist yet
+  if (error && /column .*(department|company)/i.test(error.message)) {
+    const retry = await supabase
+      .from('users')
+      .select('id, full_name, role')
+      .eq('id', uid)
+      .maybeSingle()
+    data = retry.data
+    error = retry.error
+  }
+
+  if (error) {
+    console.error('Failed to load user profile:', error)
+    return null
+  }
+  return data ?? null
+}
 
 export function useAuth() {
   const [user, setUser]       = useState(null)
   const [profile, setProfile] = useState(null)
   const [loading, setLoading] = useState(true)
-  const cancelledRef = useRef(false)
-  const initializedRef = useRef(false)
 
-  async function loadProfile(uid) {
-    let { data, error } = await supabase
-      .from('users')
-      .select('id, full_name, role, department')
-      .eq('id', uid)
-      .maybeSingle()
-
-    // Fallback if department column doesn't exist yet
-    if (error && /column .*department/i.test(error.message)) {
-      const retry = await supabase
-        .from('users')
-        .select('id, full_name, role')
-        .eq('id', uid)
-        .maybeSingle()
-      data = retry.data
-      error = retry.error
-    }
-
-    if (cancelledRef.current) return
-    if (error) {
-      console.error('Failed to load user profile:', error)
-      setProfile(null)
-    } else {
-      setProfile(data ?? null)
-    }
-  }
+  // Use a ref to track the current "session ID" so that a slow
+  // in-flight loadProfile from a previous auth event doesn't
+  // overwrite state set by a newer event.
+  const activeSessionRef = useRef(0)
 
   useEffect(() => {
-    cancelledRef.current = false
-    initializedRef.current = false
+    let timeoutId
 
-    // ── Single source of truth: onAuthStateChange ────────────
-    // INITIAL_SESSION fires on page load/refresh with the
-    // existing session (or null), so we don't need getSession().
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (event, session) => {
-        if (cancelledRef.current) return
+        // Give this event a unique session ID
+        const sessionId = ++activeSessionRef.current
 
         if (event === 'SIGNED_OUT') {
-          setUser(null)
-          setProfile(null)
-          setLoading(false)
-          initializedRef.current = true
+          if (sessionId === activeSessionRef.current) {
+            setUser(null)
+            setProfile(null)
+            setLoading(false)
+          }
           return
         }
 
         const u = session?.user ?? null
-        setUser(u)
 
-        if (u) {
-          await loadProfile(u.id)
-        } else {
-          setProfile(null)
+        if (sessionId === activeSessionRef.current) {
+          setUser(u)
         }
 
-        if (!cancelledRef.current) {
-          setLoading(false)
-          initializedRef.current = true
+        if (u) {
+          const prof = await fetchProfile(u.id)
+          // Only apply if this is still the latest event
+          if (sessionId === activeSessionRef.current) {
+            setProfile(prof)
+            setLoading(false)
+          }
+        } else {
+          if (sessionId === activeSessionRef.current) {
+            setProfile(null)
+            setLoading(false)
+          }
         }
       }
     )
 
-    // Safety net: if onAuthStateChange never fires within 5s
-    // (e.g. network issue), stop showing the loading spinner.
-    const timeout = setTimeout(() => {
-      if (!initializedRef.current && !cancelledRef.current) {
+    // Safety net: stop spinner after 6s if no event fires
+    timeoutId = setTimeout(() => {
+      if (activeSessionRef.current === 0) {
         setLoading(false)
       }
-    }, 5000)
+    }, 6000)
 
     return () => {
-      cancelledRef.current = true
       subscription.unsubscribe()
-      clearTimeout(timeout)
+      clearTimeout(timeoutId)
     }
   }, [])
 
-  const signOut = async () => {
+  const signOut = useCallback(async () => {
     setLoading(true)
     await supabase.auth.signOut()
-    // SIGNED_OUT event above will clear state and setLoading(false)
-  }
+    // SIGNED_OUT event will clear state and call setLoading(false)
+  }, [])
 
   return { user, profile, loading, signOut }
 }
+
