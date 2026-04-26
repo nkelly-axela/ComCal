@@ -208,12 +208,62 @@ export default function LeaveAdminPanel() {
   const [alForm, setAlForm] = useState({ userId: '', typeId: '', year: currentYear, total: '', note: '' })
   const [employees, setEmployees] = useState([])
 
+  const [requests, setRequests] = useState([])
+  const [reqFilter, setReqFilter] = useState('pending')
+
   const [seedLoading, setSeedLoading] = useState(false)
   const [toast, setToast] = useState(null)
 
   const showToast = (msg, type = 'success') => {
     setToast({ msg, type })
     setTimeout(() => setToast(null), 3000)
+  }
+
+  const loadRequests = useCallback(async () => {
+    try {
+      const { data, error } = await supabase
+        .from('leave_requests')
+        .select(`
+          id, start_date, end_date, days_requested, status, reason, created_at,
+          leave_types ( name, color ),
+          user:users!leave_requests_user_id_fkey ( full_name, role )
+        `)
+        .order('created_at', { ascending: false })
+      if (error) throw error
+      setRequests(data ?? [])
+    } catch (e) {
+      showToast(e.message, 'error')
+    }
+  }, [])
+
+  const approveRequest = async (id) => {
+    try {
+      const { data: { user } } = await supabase.auth.getUser()
+      const { error } = await supabase
+        .from('leave_requests')
+        .update({ status: 'approved', approver_id: user?.id })
+        .eq('id', id)
+      if (error) throw error
+      showToast('Request approved')
+      await loadRequests()
+    } catch (e) {
+      showToast(e.message, 'error')
+    }
+  }
+
+  const rejectRequest = async (id) => {
+    try {
+      const { data: { user } } = await supabase.auth.getUser()
+      const { error } = await supabase
+        .from('leave_requests')
+        .update({ status: 'rejected', approver_id: user?.id })
+        .eq('id', id)
+      if (error) throw error
+      showToast('Request rejected')
+      await loadRequests()
+    } catch (e) {
+      showToast(e.message, 'error')
+    }
   }
 
   const loadLeaveTypes = useCallback(async () => {
@@ -277,7 +327,8 @@ export default function LeaveAdminPanel() {
     loadEntitlements()
     loadAllowances(alYear)
     loadEmployees()
-  }, [loadLeaveTypes, loadEntitlements, loadAllowances, loadEmployees, alYear])
+    loadRequests()
+  }, [loadLeaveTypes, loadEntitlements, loadAllowances, loadEmployees, loadRequests, alYear])
 
   const saveLeaveType = async () => {
     if (!ltForm.name.trim()) return
@@ -404,6 +455,7 @@ export default function LeaveAdminPanel() {
 
   const navItems = [
     { id: 'overview',     label: 'Overview',      dot: '#1D9E75' },
+    { id: 'requests',     label: 'Requests',      dot: '#E24B4A' },
     { id: 'leave-types',  label: 'Leave types',   dot: '#378ADD' },
     { id: 'entitlements', label: 'Entitlements',  dot: '#BA7517' },
     { id: 'allowances',   label: 'Allowances',    dot: '#D4537E' },
@@ -456,6 +508,71 @@ export default function LeaveAdminPanel() {
         </nav>
 
         <main style={{ padding: '1.5rem', overflowY: 'auto' }}>
+
+          {tab === 'requests' && (
+            <div>
+              <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: '1.25rem' }}>
+                <div>
+                  <div style={{ fontSize: 15, fontWeight: 500 }}>Leave requests</div>
+                  <div style={{ fontSize: 13, color: '#6b7280', marginTop: 2 }}>Review and approve or reject employee requests</div>
+                </div>
+                <div style={{ display: 'flex', gap: 4, padding: 3, background: '#f3f4f6', borderRadius: 8 }}>
+                  {['pending','approved','rejected','all'].map(f => (
+                    <button key={f} onClick={() => setReqFilter(f)} style={{
+                      fontSize: 12, padding: '0.3rem 0.7rem', border: 'none', cursor: 'pointer',
+                      background: reqFilter === f ? '#fff' : 'transparent',
+                      borderRadius: 6, fontFamily: 'inherit',
+                      color: reqFilter === f ? '#111' : '#6b7280',
+                      fontWeight: reqFilter === f ? 500 : 400,
+                      boxShadow: reqFilter === f ? '0 1px 2px rgba(0,0,0,0.06)' : 'none',
+                      textTransform: 'capitalize',
+                    }}>{f}</button>
+                  ))}
+                </div>
+              </div>
+
+              <Table headers={['Employee', 'Type', 'Dates', 'Days', 'Reason', 'Status', 'Actions']} empty="No requests found">
+                {requests
+                  .filter(r => reqFilter === 'all' || r.status === reqFilter)
+                  .map(r => (
+                  <TR key={r.id}>
+                    <TD>
+                      <div style={{ fontWeight: 500 }}>{r.user?.full_name ?? '—'}</div>
+                      <div style={{ fontSize: 11, color: '#9ca3af', textTransform: 'capitalize' }}>{r.user?.role}</div>
+                    </TD>
+                    <TD>
+                      <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                        <Swatch color={r.leave_types?.color} />
+                        {r.leave_types?.name}
+                      </div>
+                    </TD>
+                    <TD style={{ whiteSpace: 'nowrap' }}>
+                      {new Date(r.start_date).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}
+                      {' → '}
+                      {new Date(r.end_date).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })}
+                    </TD>
+                    <TD>{r.days_requested}</TD>
+                    <TD style={{ color: '#6b7280', maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {r.reason || '—'}
+                    </TD>
+                    <TD>
+                      <Badge variant={r.status === 'approved' ? 'green' : r.status === 'rejected' ? 'red' : 'amber'}>
+                        {r.status}
+                      </Badge>
+                    </TD>
+                    <TD>
+                      {r.status === 'pending' && (
+                        <div style={{ display: 'flex', gap: 6 }}>
+                          <Btn size="sm" variant="primary" onClick={() => approveRequest(r.id)}>Approve</Btn>
+                          <Btn size="sm" variant="danger" onClick={() => rejectRequest(r.id)}>Reject</Btn>
+                        </div>
+                      )}
+                    </TD>
+                  </TR>
+                ))}
+              </Table>
+            </div>
+          )}
 
           {tab === 'overview' && (
             <div>
