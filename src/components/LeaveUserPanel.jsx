@@ -62,7 +62,7 @@ export default function LeaveUserPanel({ userId, fullName }) {
 
   const [reqModal, setReqModal] = useState(false)
   const [busy, setBusy] = useState(false)
-  const [form, setForm] = useState({ typeId: '', start: '', end: '', reason: '' })
+  const [form, setForm] = useState({ typeId: '', start: '', end: '', reason: '', isHourly: false, hours: '1', hourDate: '' })
   const [toast, setToast] = useState(null)
 
   const showToast = (msg, type = 'success') => {
@@ -84,7 +84,7 @@ export default function LeaveUserPanel({ userId, fullName }) {
   const loadRequests = useCallback(async () => {
     const { data, error } = await supabase
       .from('leave_requests')
-      .select('id, leave_type_id, start_date, end_date, days_requested, status, reason, created_at, leave_types(name, color)')
+      .select('id, leave_type_id, start_date, end_date, days_requested, hours_requested, status, reason, admin_note, created_at, leave_types(name, color)')
       .eq('user_id', userId)
       .order('start_date', { ascending: false })
       .limit(50)
@@ -111,16 +111,43 @@ export default function LeaveUserPanel({ userId, fullName }) {
 
   // ── Submit a new request ─────────────────────────────────────
   const submitRequest = async () => {
-    if (!form.typeId || !form.start || !form.end) {
-      showToast('Pick a leave type and both dates', 'error'); return
+    if (!form.typeId) { showToast('Pick a leave type', 'error'); return }
+
+    if (form.isHourly) {
+      if (!form.hourDate) { showToast('Pick a date for your hourly request', 'error'); return }
+      const hrs = parseFloat(form.hours)
+      if (!hrs || hrs <= 0 || hrs > 8) { showToast('Enter between 1 and 8 hours', 'error'); return }
+      setBusy(true)
+      try {
+        const { error } = await supabase.from('leave_requests').insert({
+          user_id: userId,
+          leave_type_id: form.typeId,
+          start_date: form.hourDate,
+          end_date: form.hourDate,
+          days_requested: 0,
+          hours_requested: hrs,
+          reason: form.reason || null,
+          status: 'pending',
+        })
+        if (error) throw error
+        showToast('Request submitted')
+        setReqModal(false)
+        setForm({ typeId: '', start: '', end: '', reason: '', isHourly: false, hours: '1', hourDate: '' })
+        await loadRequests()
+      } catch (e) {
+        showToast(e.message, 'error')
+      } finally {
+        setBusy(false)
+      }
+      return
     }
+
+    if (!form.start || !form.end) { showToast('Pick both dates', 'error'); return }
     if (new Date(form.end) < new Date(form.start)) {
       showToast('End date can\'t be before start date', 'error'); return
     }
     const days = calcBusinessDays(form.start, form.end)
-    if (days <= 0) {
-      showToast('That range has no working days', 'error'); return
-    }
+    if (days <= 0) { showToast('That range has no working days', 'error'); return }
     setBusy(true)
     try {
       const { error } = await supabase.from('leave_requests').insert({
@@ -129,13 +156,14 @@ export default function LeaveUserPanel({ userId, fullName }) {
         start_date: form.start,
         end_date: form.end,
         days_requested: days,
+        hours_requested: null,
         reason: form.reason || null,
         status: 'pending',
       })
       if (error) throw error
       showToast('Request submitted')
       setReqModal(false)
-      setForm({ typeId: '', start: '', end: '', reason: '' })
+      setForm({ typeId: '', start: '', end: '', reason: '', isHourly: false, hours: '1', hourDate: '' })
       await loadRequests()
     } catch (e) {
       showToast(e.message, 'error')
@@ -189,7 +217,7 @@ export default function LeaveUserPanel({ userId, fullName }) {
             <div style={{ fontSize: 13, color: '#6b7280', marginTop: 2 }}>Your leave for {currentYear}</div>
           </div>
           <Btn variant="primary" size="sm" onClick={() => {
-            setForm({ typeId: leaveTypes[0]?.id ?? '', start: '', end: '', reason: '' })
+            setForm({ typeId: leaveTypes[0]?.id ?? '', start: '', end: '', reason: '', isHourly: false, hours: '1', hourDate: '' })
             setReqModal(true)
           }}>+ Request leave</Btn>
         </div>
@@ -208,7 +236,7 @@ export default function LeaveUserPanel({ userId, fullName }) {
 
         {/* Requests */}
         <div style={{ fontSize: 14, fontWeight: 500, marginBottom: '0.75rem' }}>Your requests</div>
-        <Table headers={['Type', 'Dates', 'Days', 'Status', 'Actions']} empty="No requests yet">
+        <Table headers={['Type', 'Dates', 'Duration', 'Status', 'Admin note', 'Actions']} empty="No requests yet">
           {requests.map(r => {
             const meta = STATUS_VARIANTS[r.status] ?? { variant: 'gray', label: r.status }
             return (
@@ -218,11 +246,29 @@ export default function LeaveUserPanel({ userId, fullName }) {
                   {r.leave_types?.name ?? 'Unknown'}
                 </TD>
                 <TD>
-                  <div>{fmtDate(r.start_date)} → {fmtDate(r.end_date)}</div>
+                  <div>
+                    {r.hours_requested
+                      ? fmtDate(r.start_date)
+                      : <>{fmtDate(r.start_date)}{r.start_date !== r.end_date && <> → {fmtDate(r.end_date)}</>}</>}
+                  </div>
                   {r.reason && <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 2 }}>{r.reason}</div>}
                 </TD>
-                <TD>{r.days_requested}</TD>
+                <TD>
+                  {r.hours_requested
+                    ? <>{r.hours_requested}h</>
+                    : <>{r.days_requested} day{r.days_requested === 1 ? '' : 's'}</>}
+                </TD>
                 <TD><Badge variant={meta.variant}>{meta.label}</Badge></TD>
+                <TD style={{ maxWidth: 160 }}>
+                  {r.admin_note
+                    ? <span style={{
+                        fontSize: 12,
+                        color: r.status === 'rejected' ? '#991b1b' : '#065f46',
+                        background: r.status === 'rejected' ? '#fee2e2' : '#d1fae5',
+                        padding: '2px 8px', borderRadius: 6,
+                      }}>{r.admin_note}</span>
+                    : <span style={{ color: '#d1d5db' }}>—</span>}
+                </TD>
                 <TD>
                   {r.status === 'pending'
                     ? <Btn size="sm" variant="danger" onClick={() => cancelRequest(r.id)}>Cancel</Btn>
@@ -242,16 +288,55 @@ export default function LeaveUserPanel({ userId, fullName }) {
             {leaveTypes.map(lt => <option key={lt.id} value={lt.id}>{lt.name}</option>)}
           </select>
         </Field>
-        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-          <Field label="Start">
-            <input style={inputStyle} type="date" value={form.start}
-              onChange={e => setForm(f => ({ ...f, start: e.target.value }))} />
-          </Field>
-          <Field label="End">
-            <input style={inputStyle} type="date" value={form.end} min={form.start || undefined}
-              onChange={e => setForm(f => ({ ...f, end: e.target.value }))} />
-          </Field>
+
+        {/* Hourly / full-day toggle */}
+        <div style={{
+          display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+          marginBottom: '0.85rem', padding: '0.5rem 0.65rem',
+          background: '#f9fafb', borderRadius: 8, border: '0.5px solid #e5e7eb',
+        }}>
+          <span style={{ fontSize: 13, color: '#374151' }}>Request by the hour</span>
+          <label style={{ position: 'relative', display: 'inline-block', width: 32, height: 18, cursor: 'pointer' }}>
+            <input type="checkbox" checked={form.isHourly} onChange={e => setForm(f => ({ ...f, isHourly: e.target.checked }))}
+              style={{ opacity: 0, width: 0, height: 0 }} />
+            <span style={{
+              position: 'absolute', inset: 0,
+              background: form.isHourly ? '#1D9E75' : '#d1d5db',
+              borderRadius: 9, transition: '.2s',
+            }}>
+              <span style={{
+                position: 'absolute', width: 12, height: 12,
+                left: form.isHourly ? 17 : 3, top: 3,
+                background: '#fff', borderRadius: '50%', transition: '.2s',
+              }} />
+            </span>
+          </label>
         </div>
+
+        {form.isHourly ? (
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+            <Field label="Date">
+              <input style={inputStyle} type="date" value={form.hourDate}
+                onChange={e => setForm(f => ({ ...f, hourDate: e.target.value }))} />
+            </Field>
+            <Field label="Hours (1–8)">
+              <select style={inputStyle} value={form.hours} onChange={e => setForm(f => ({ ...f, hours: e.target.value }))}>
+                {[1,2,3,4,5,6,7,8].map(h => <option key={h} value={h}>{h} hour{h > 1 ? 's' : ''}</option>)}
+              </select>
+            </Field>
+          </div>
+        ) : (
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+            <Field label="Start">
+              <input style={inputStyle} type="date" value={form.start}
+                onChange={e => setForm(f => ({ ...f, start: e.target.value }))} />
+            </Field>
+            <Field label="End">
+              <input style={inputStyle} type="date" value={form.end} min={form.start || undefined}
+                onChange={e => setForm(f => ({ ...f, end: e.target.value }))} />
+            </Field>
+          </div>
+        )}
         <Field label="Reason (optional)">
           <textarea
             value={form.reason}
@@ -266,9 +351,13 @@ export default function LeaveUserPanel({ userId, fullName }) {
           padding: '0.6rem 0.75rem', fontSize: 12, color: '#374151',
           marginBottom: '0.85rem',
         }}>
-          {previewDays > 0
-            ? <>This will use <strong>{previewDays}</strong> business day{previewDays === 1 ? '' : 's'}.</>
-            : <>Pick a date range to see the day count.</>}
+          {form.isHourly
+            ? form.hourDate && form.hours
+              ? <>This will use <strong>{form.hours} hour{+form.hours > 1 ? 's' : ''}</strong> of leave on {fmtDate(form.hourDate)}.</>
+              : <>Pick a date and number of hours.</>
+            : previewDays > 0
+              ? <>This will use <strong>{previewDays}</strong> business day{previewDays === 1 ? '' : 's'}.</>
+              : <>Pick a date range to see the day count.</>}
         </div>
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', borderTop: '0.5px solid #e5e7eb', paddingTop: '1rem' }}>
           <Btn size="sm" onClick={() => setReqModal(false)}>Cancel</Btn>
