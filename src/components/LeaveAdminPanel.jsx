@@ -210,6 +210,8 @@ export default function LeaveAdminPanel() {
 
   const [requests, setRequests] = useState([])
   const [reqFilter, setReqFilter] = useState('pending')
+  const [actionModal, setActionModal] = useState(null) // { id, action: 'approve'|'reject' }
+  const [actionNote, setActionNote] = useState('')
 
   const [seedLoading, setSeedLoading] = useState(false)
   const [toast, setToast] = useState(null)
@@ -224,7 +226,7 @@ export default function LeaveAdminPanel() {
       const { data, error } = await supabase
         .from('leave_requests')
         .select(`
-          id, start_date, end_date, days_requested, status, reason, created_at,
+          id, start_date, end_date, days_requested, hours_requested, status, reason, admin_note, created_at,
           leave_types ( name, color ),
           user:users!leave_requests_user_id_fkey ( full_name, role )
         `)
@@ -236,30 +238,28 @@ export default function LeaveAdminPanel() {
     }
   }, [])
 
-  const approveRequest = async (id) => {
-    try {
-      const { data: { user } } = await supabase.auth.getUser()
-      const { error } = await supabase
-        .from('leave_requests')
-        .update({ status: 'approved', approver_id: user?.id })
-        .eq('id', id)
-      if (error) throw error
-      showToast('Request approved')
-      await loadRequests()
-    } catch (e) {
-      showToast(e.message, 'error')
-    }
+  const openAction = (id, action) => {
+    setActionNote('')
+    setActionModal({ id, action })
   }
 
-  const rejectRequest = async (id) => {
+  const confirmAction = async () => {
+    if (!actionModal) return
+    const { id, action } = actionModal
     try {
       const { data: { user } } = await supabase.auth.getUser()
       const { error } = await supabase
         .from('leave_requests')
-        .update({ status: 'rejected', approver_id: user?.id })
+        .update({
+          status: action === 'approve' ? 'approved' : 'rejected',
+          approver_id: user?.id,
+          admin_note: actionNote.trim() || null,
+        })
         .eq('id', id)
       if (error) throw error
-      showToast('Request rejected')
+      showToast(action === 'approve' ? 'Request approved' : 'Request rejected')
+      setActionModal(null)
+      setActionNote('')
       await loadRequests()
     } catch (e) {
       showToast(e.message, 'error')
@@ -531,7 +531,7 @@ export default function LeaveAdminPanel() {
                 </div>
               </div>
 
-              <Table headers={['Employee', 'Type', 'Dates', 'Days', 'Reason', 'Status', 'Actions']} empty="No requests found">
+              <Table headers={['Employee', 'Type', 'Dates', 'Duration', 'Reason', 'Admin note', 'Status', 'Actions']} empty="No requests found">
                 {requests
                   .filter(r => reqFilter === 'all' || r.status === reqFilter)
                   .map(r => (
@@ -548,12 +548,20 @@ export default function LeaveAdminPanel() {
                     </TD>
                     <TD style={{ whiteSpace: 'nowrap' }}>
                       {new Date(r.start_date).toLocaleDateString(undefined, { day: 'numeric', month: 'short' })}
-                      {' → '}
-                      {new Date(r.end_date).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })}
+                      {r.start_date !== r.end_date && <> → {new Date(r.end_date).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })}</>}
                     </TD>
-                    <TD>{r.days_requested}</TD>
-                    <TD style={{ color: '#6b7280', maxWidth: 160, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                    <TD style={{ whiteSpace: 'nowrap' }}>
+                      {r.hours_requested
+                        ? <>{r.hours_requested}h</>
+                        : <>{r.days_requested} day{r.days_requested === 1 ? '' : 's'}</>}
+                    </TD>
+                    <TD style={{ color: '#6b7280', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {r.reason || '—'}
+                    </TD>
+                    <TD style={{ maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                      {r.admin_note
+                        ? <span style={{ color: r.status === 'rejected' ? '#991b1b' : '#065f46' }}>{r.admin_note}</span>
+                        : <span style={{ color: '#d1d5db' }}>—</span>}
                     </TD>
                     <TD>
                       <Badge variant={r.status === 'approved' ? 'green' : r.status === 'rejected' ? 'red' : 'amber'}>
@@ -563,8 +571,8 @@ export default function LeaveAdminPanel() {
                     <TD>
                       {r.status === 'pending' && (
                         <div style={{ display: 'flex', gap: 6 }}>
-                          <Btn size="sm" variant="primary" onClick={() => approveRequest(r.id)}>Approve</Btn>
-                          <Btn size="sm" variant="danger" onClick={() => rejectRequest(r.id)}>Reject</Btn>
+                          <Btn size="sm" variant="primary" onClick={() => openAction(r.id, 'approve')}>Approve</Btn>
+                          <Btn size="sm" variant="danger" onClick={() => openAction(r.id, 'reject')}>Reject</Btn>
                         </div>
                       )}
                     </TD>
@@ -844,6 +852,38 @@ export default function LeaveAdminPanel() {
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', borderTop: '0.5px solid #e5e7eb', paddingTop: '1rem' }}>
           <Btn size="sm" onClick={() => setAlModal(false)}>Cancel</Btn>
           <Btn size="sm" variant="primary" onClick={saveAllowance}>Save allowance</Btn>
+        </div>
+      </Modal>
+
+      <Modal
+        open={!!actionModal}
+        onClose={() => setActionModal(null)}
+        title={actionModal?.action === 'approve' ? 'Approve request' : 'Reject request'}
+      >
+        <p style={{ fontSize: 13, color: '#6b7280', marginBottom: '1rem' }}>
+          {actionModal?.action === 'approve'
+            ? 'Optionally leave a note for the employee before approving.'
+            : 'Please provide a reason for rejecting this request.'}
+        </p>
+        <Field label={actionModal?.action === 'approve' ? 'Note for employee (optional)' : 'Reason for rejection'}>
+          <textarea
+            value={actionNote}
+            onChange={e => setActionNote(e.target.value)}
+            rows={3}
+            placeholder={actionModal?.action === 'approve' ? 'e.g. Approved, enjoy your break!' : 'e.g. Insufficient cover during this period'}
+            style={{ ...inputStyle, fontFamily: 'inherit', resize: 'vertical' }}
+          />
+        </Field>
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', borderTop: '0.5px solid #e5e7eb', paddingTop: '1rem' }}>
+          <Btn size="sm" onClick={() => setActionModal(null)}>Cancel</Btn>
+          <Btn
+            size="sm"
+            variant={actionModal?.action === 'approve' ? 'primary' : 'danger'}
+            onClick={confirmAction}
+            disabled={actionModal?.action === 'reject' && !actionNote.trim()}
+          >
+            {actionModal?.action === 'approve' ? 'Confirm approval' : 'Confirm rejection'}
+          </Btn>
         </div>
       </Modal>
 
