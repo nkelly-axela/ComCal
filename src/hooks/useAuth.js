@@ -16,6 +16,7 @@ export function useAuth() {
   const [profile, setProfile] = useState(null)
   const [loading, setLoading] = useState(true)
   const cancelledRef = useRef(false)
+  const initializedRef = useRef(false)
 
   async function loadProfile(uid) {
     let { data, error } = await supabase
@@ -46,17 +47,11 @@ export function useAuth() {
 
   useEffect(() => {
     cancelledRef.current = false
+    initializedRef.current = false
 
-    // ── Initial session check ────────────────────────────────
-    supabase.auth.getSession().then(async ({ data: { session } }) => {
-      if (cancelledRef.current) return
-      const u = session?.user ?? null
-      setUser(u)
-      if (u) await loadProfile(u.id)
-      setLoading(false)
-    })
-
-    // ── Auth state listener ──────────────────────────────────
+    // ── Single source of truth: onAuthStateChange ────────────
+    // INITIAL_SESSION fires on page load/refresh with the
+    // existing session (or null), so we don't need getSession().
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (event, session) => {
         if (cancelledRef.current) return
@@ -65,30 +60,45 @@ export function useAuth() {
           setUser(null)
           setProfile(null)
           setLoading(false)
+          initializedRef.current = true
           return
         }
 
         const u = session?.user ?? null
         setUser(u)
+
         if (u) {
           await loadProfile(u.id)
         } else {
           setProfile(null)
         }
-        setLoading(false)
+
+        if (!cancelledRef.current) {
+          setLoading(false)
+          initializedRef.current = true
+        }
       }
     )
+
+    // Safety net: if onAuthStateChange never fires within 5s
+    // (e.g. network issue), stop showing the loading spinner.
+    const timeout = setTimeout(() => {
+      if (!initializedRef.current && !cancelledRef.current) {
+        setLoading(false)
+      }
+    }, 5000)
 
     return () => {
       cancelledRef.current = true
       subscription.unsubscribe()
+      clearTimeout(timeout)
     }
   }, [])
 
   const signOut = async () => {
     setLoading(true)
     await supabase.auth.signOut()
-    // onAuthStateChange will fire SIGNED_OUT and clear state
+    // SIGNED_OUT event above will clear state and setLoading(false)
   }
 
   return { user, profile, loading, signOut }
