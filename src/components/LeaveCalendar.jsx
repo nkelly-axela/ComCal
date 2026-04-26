@@ -11,13 +11,9 @@
  *                 inside each day cell.
  *
  * Data source:
- *   public.leave_requests (status='approved')
- *     joined with leave_types (name, color)
- *     joined with users (full_name, department, role)
- *
- * RLS reminder (see migration_04_calendar.sql): every authenticated
- * user must be able to SELECT approved rows in leave_requests for
- * this view to populate.
+ *   public.v_team_calendar view — exposes only safe fields
+ *   (no reason, no admin_note) so employees cannot access
+ *   sensitive data even via direct API calls.
  * ─────────────────────────────────────────────────────────────
  */
 
@@ -51,47 +47,40 @@ export default function LeaveCalendar() {
 
   const dim = daysInMonth(year, month)
 
-  // ── Load approved leave that overlaps the visible month ─────
+  // ── Load approved leave from secure view ───────────────────
   const load = useCallback(async () => {
     setLoading(true)
     setError(null)
     const monthStart = new Date(year, month, 1)
     const monthEnd = new Date(year, month + 1, 0)
 
-    // Use explicit FK hint to avoid ambiguity with approver_id FK
+    // v_team_calendar exposes only safe columns — no reason or
+    // admin_note — so employees cannot access sensitive data
+    // even if they call the Supabase API directly.
     const { data, error } = await supabase
-      .from('leave_requests')
-      .select(`
-        id, start_date, end_date, days_requested, status, user_id, leave_type_id,
-        leave_types ( name, color ),
-        user:users!leave_requests_user_id_fkey ( full_name, department, role )
-      `)
-      .eq('status', 'approved')
+      .from('v_team_calendar')
+      .select('id, start_date, end_date, days_requested, status, user_id, leave_type_id, leave_type_name, leave_type_color, full_name, department')
       .gte('end_date', ymd(monthStart))
       .lte('start_date', ymd(monthEnd))
       .order('start_date', { ascending: true })
 
     if (error) {
-      // If the `department` column doesn't exist yet, retry without it
-      if (/column .*department/i.test(error.message)) {
-        const retry = await supabase
-          .from('leave_requests')
-          .select(`
-            id, start_date, end_date, days_requested, status, user_id, leave_type_id,
-            leave_types ( name, color ),
-            user:users!leave_requests_user_id_fkey ( full_name, role )
-          `)
-          .eq('status', 'approved')
-          .gte('end_date', ymd(monthStart))
-          .lte('start_date', ymd(monthEnd))
-          .order('start_date', { ascending: true })
-        if (retry.error) setError(retry.error.message)
-        else setRequests(retry.data ?? [])
-      } else {
-        setError(error.message)
-      }
+      setError(error.message)
     } else {
-      setRequests(data ?? [])
+      // Normalise flat view fields into the nested shape the
+      // rest of the component expects (r.user, r.leave_types)
+      const normalised = (data ?? []).map(r => ({
+        ...r,
+        user: {
+          full_name: r.full_name,
+          department: r.department ?? null,
+        },
+        leave_types: {
+          name: r.leave_type_name,
+          color: r.leave_type_color,
+        },
+      }))
+      setRequests(normalised)
     }
     setLoading(false)
   }, [year, month])
