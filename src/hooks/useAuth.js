@@ -59,6 +59,16 @@ export function useAuth() {
         // Give this event a unique session ID
         const sessionId = ++activeSessionRef.current
 
+        // Handle expired/invalid token — sign out cleanly
+        if (event === 'SIGNED_OUT' || event === 'TOKEN_REFRESHED' && !session) {
+          if (sessionId === activeSessionRef.current) {
+            setUser(null)
+            setProfile(null)
+            setLoading(false)
+          }
+          return
+        }
+
         if (event === 'SIGNED_OUT') {
           if (sessionId === activeSessionRef.current) {
             setUser(null)
@@ -104,9 +114,18 @@ export function useAuth() {
   }, [])
 
   const signOut = useCallback(async () => {
-    setLoading(true)
-    await supabase.auth.signOut()
-    // SIGNED_OUT event will clear state and call setLoading(false)
+    // Immediately clear state so UI responds even if the
+    // Supabase signOut call fails due to an expired token
+    activeSessionRef.current++
+    setUser(null)
+    setProfile(null)
+    setLoading(false)
+    try {
+      await supabase.auth.signOut()
+    } catch (e) {
+      // Ignore errors — state is already cleared above
+      console.warn('signOut error (ignored):', e)
+    }
   }, [])
 
   return { user, profile, loading, signOut }
