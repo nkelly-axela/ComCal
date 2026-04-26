@@ -14,7 +14,7 @@
  * ─────────────────────────────────────────────────────────────
  */
 
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { supabase } from '../lib/supabase'
 
 // ─── Helpers ──────────────────────────────────────────────────
@@ -86,6 +86,8 @@ export default function LeaveReportsPanel() {
   const [fromDate, setFromDate] = useState(firstOfYear())
   const [toDate, setToDate]     = useState(today())
   const [statusFilter, setStatusFilter] = useState('all')
+  const [employeeFilter, setEmployeeFilter] = useState('all')
+  const [employees, setEmployees] = useState([])
   const [rows, setRows]         = useState([])
   const [loading, setLoading]   = useState(false)
   const [ran, setRan]           = useState(false)
@@ -95,6 +97,14 @@ export default function LeaveReportsPanel() {
     setToast({ msg, type })
     setTimeout(() => setToast(null), 3500)
   }
+
+  useEffect(() => {
+    supabase
+      .from('users')
+      .select('id, full_name')
+      .order('full_name')
+      .then(({ data }) => setEmployees(data ?? []))
+  }, [])
 
   // ── Run report ───────────────────────────────────────────────
   const runReport = useCallback(async () => {
@@ -109,7 +119,7 @@ export default function LeaveReportsPanel() {
           id, start_date, end_date, days_requested, hours_requested,
           status, reason, admin_note, created_at,
           leave_types ( name, color ),
-          user:users!leave_requests_user_id_fkey ( full_name, role )
+          user:users!leave_requests_user_id_fkey ( id, full_name, role )
         `)
         .gte('start_date', fromDate)
         .lte('start_date', toDate)
@@ -117,6 +127,10 @@ export default function LeaveReportsPanel() {
 
       if (statusFilter !== 'all') {
         query = query.eq('status', statusFilter)
+      }
+
+      if (employeeFilter !== 'all') {
+        query = query.eq('user_id', employeeFilter)
       }
 
       const { data, error } = await query
@@ -128,14 +142,17 @@ export default function LeaveReportsPanel() {
     } finally {
       setLoading(false)
     }
-  }, [fromDate, toDate, statusFilter])
+  }, [fromDate, toDate, statusFilter, employeeFilter])
 
   // ── Download ─────────────────────────────────────────────────
   const handleDownload = () => {
     if (!rows.length) { showToast('Run the report first', 'error'); return }
     const csv = toCSV(rows)
     const label = statusFilter === 'all' ? 'all' : statusFilter
-    const filename = `leave-report_${label}_${fromDate}_to_${toDate}.csv`
+    const empLabel = employeeFilter === 'all'
+      ? 'all-employees'
+      : (employees.find(e => e.id === employeeFilter)?.full_name ?? 'employee').replace(/\s+/g, '-').toLowerCase()
+    const filename = `leave-report_${empLabel}_${label}_${fromDate}_to_${toDate}.csv`
     downloadCSV(csv, filename)
     showToast(`Downloaded ${rows.length} row${rows.length === 1 ? '' : 's'} as CSV`)
   }
@@ -198,6 +215,18 @@ export default function LeaveReportsPanel() {
             onChange={e => setToDate(e.target.value)}
             style={inputStyle}
           />
+        </Field>
+        <Field label="Employee">
+          <select
+            value={employeeFilter}
+            onChange={e => setEmployeeFilter(e.target.value)}
+            style={{ ...inputStyle, minWidth: 160 }}
+          >
+            <option value="all">All employees</option>
+            {employees.map(e => (
+              <option key={e.id} value={e.id}>{e.full_name}</option>
+            ))}
+          </select>
         </Field>
         <Field label="Status">
           <div style={{ display: 'flex', gap: 4, padding: 3, background: '#fff', borderRadius: 8, border: '0.5px solid #e5e7eb' }}>
