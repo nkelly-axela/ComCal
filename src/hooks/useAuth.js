@@ -8,59 +8,66 @@
  * ─────────────────────────────────────────────────────────────
  */
 
-import { useEffect, useState } from 'react'
+import { useEffect, useState, useRef } from 'react'
 import { supabase } from '../lib/supabase'
 
 export function useAuth() {
-  const [user, setUser] = useState(null)
+  const [user, setUser]       = useState(null)
   const [profile, setProfile] = useState(null)
   const [loading, setLoading] = useState(true)
+  const cancelledRef = useRef(false)
 
-  useEffect(() => {
-    let cancelled = false
+  async function loadProfile(uid) {
+    let { data, error } = await supabase
+      .from('users')
+      .select('id, full_name, role, department')
+      .eq('id', uid)
+      .maybeSingle()
 
-    async function loadProfile(uid) {
-      // Try selecting the optional `department` column. If it doesn't
-      // exist yet (pre migration_04), fall back without it so login
-      // still works.
-      let { data, error } = await supabase
+    // Fallback if department column doesn't exist yet
+    if (error && /column .*department/i.test(error.message)) {
+      const retry = await supabase
         .from('users')
-        .select('id, full_name, role, department')
+        .select('id, full_name, role')
         .eq('id', uid)
         .maybeSingle()
-
-      if (error && /column .*department/i.test(error.message)) {
-        const retry = await supabase
-          .from('users')
-          .select('id, full_name, role')
-          .eq('id', uid)
-          .maybeSingle()
-        data = retry.data
-        error = retry.error
-      }
-
-      if (cancelled) return
-      if (error) {
-        console.error('Failed to load user profile:', error)
-        setProfile(null)
-      } else {
-        setProfile(data ?? null)
-      }
+      data = retry.data
+      error = retry.error
     }
 
-    async function init() {
-      const { data: { session } } = await supabase.auth.getSession()
-      if (cancelled) return
+    if (cancelledRef.current) return
+    if (error) {
+      console.error('Failed to load user profile:', error)
+      setProfile(null)
+    } else {
+      setProfile(data ?? null)
+    }
+  }
+
+  useEffect(() => {
+    cancelledRef.current = false
+
+    // ── Initial session check ────────────────────────────────
+    supabase.auth.getSession().then(async ({ data: { session } }) => {
+      if (cancelledRef.current) return
       const u = session?.user ?? null
       setUser(u)
       if (u) await loadProfile(u.id)
-      if (!cancelled) setLoading(false)
-    }
+      setLoading(false)
+    })
 
-    init()
-
+    // ── Auth state listener ──────────────────────────────────
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
-      async (_event, session) => {
+      async (event, session) => {
+        if (cancelledRef.current) return
+
+        if (event === 'SIGNED_OUT') {
+          setUser(null)
+          setProfile(null)
+          setLoading(false)
+          return
+        }
+
         const u = session?.user ?? null
         setUser(u)
         if (u) {
@@ -68,19 +75,21 @@ export function useAuth() {
         } else {
           setProfile(null)
         }
+        setLoading(false)
       }
     )
 
     return () => {
-      cancelled = true
+      cancelledRef.current = true
       subscription.unsubscribe()
     }
   }, [])
 
-  return {
-    user,
-    profile,
-    loading,
-    signOut: () => supabase.auth.signOut(),
+  const signOut = async () => {
+    setLoading(true)
+    await supabase.auth.signOut()
+    // onAuthStateChange will fire SIGNED_OUT and clear state
   }
+
+  return { user, profile, loading, signOut }
 }
