@@ -210,8 +210,16 @@ export default function LeaveAdminPanel() {
 
   const [requests, setRequests] = useState([])
   const [reqFilter, setReqFilter] = useState('pending')
-  const [actionModal, setActionModal] = useState(null) // { id, action: 'approve'|'reject' }
+  const [actionModal, setActionModal] = useState(null)
   const [actionNote, setActionNote] = useState('')
+
+  const [auditLog, setAuditLog] = useState([])
+  const [auditLoading, setAuditLoading] = useState(false)
+
+  const [empList, setEmpList] = useState([])
+  const [empModal, setEmpModal] = useState(false)
+  const [empEditing, setEmpEditing] = useState(null)
+  const [empForm, setEmpForm] = useState({ full_name: '', email: '', role: 'employee', company: '', department: '', manager_id: '' })
 
   const [seedLoading, setSeedLoading] = useState(false)
   const [toast, setToast] = useState(null)
@@ -226,13 +234,52 @@ export default function LeaveAdminPanel() {
       const { data, error } = await supabase
         .from('leave_requests')
         .select(`
-          id, start_date, end_date, days_requested, hours_requested, status, reason, admin_note, created_at,
+          id, start_date, end_date, days_requested, hours_requested,
+          status, reason, admin_note, created_at,
           leave_types ( name, color ),
           user:users!leave_requests_user_id_fkey ( full_name, role )
         `)
         .order('created_at', { ascending: false })
       if (error) throw error
       setRequests(data ?? [])
+    } catch (e) {
+      showToast(e.message, 'error')
+    }
+  }, [])
+
+  const loadAuditLog = useCallback(async () => {
+    setAuditLoading(true)
+    try {
+      const { data, error } = await supabase
+        .from('leave_audit_log')
+        .select(`
+          id, action, note, created_at, performed_by_name,
+          leave_request_id,
+          leave_requests (
+            start_date, end_date, days_requested, hours_requested,
+            user:users!leave_requests_user_id_fkey ( full_name ),
+            leave_types ( name, color )
+          )
+        `)
+        .order('created_at', { ascending: false })
+        .limit(200)
+      if (error) throw error
+      setAuditLog(data ?? [])
+    } catch (e) {
+      showToast(e.message, 'error')
+    } finally {
+      setAuditLoading(false)
+    }
+  }, [])
+
+  const loadEmpList = useCallback(async () => {
+    try {
+      const { data, error } = await supabase
+        .from('users')
+        .select('id, full_name, email, role, company, department, manager_id')
+        .order('full_name')
+      if (error) throw error
+      setEmpList(data ?? [])
     } catch (e) {
       showToast(e.message, 'error')
     }
@@ -248,6 +295,8 @@ export default function LeaveAdminPanel() {
     const { id, action } = actionModal
     try {
       const { data: { user } } = await supabase.auth.getUser()
+
+      // Update the request
       const { error } = await supabase
         .from('leave_requests')
         .update({
@@ -257,10 +306,45 @@ export default function LeaveAdminPanel() {
         })
         .eq('id', id)
       if (error) throw error
+
+      // Write audit log entry
+      const performer = empList.find(e => e.id === user?.id)
+      await supabase.from('leave_audit_log').insert({
+        leave_request_id: id,
+        action: action === 'approve' ? 'approved' : 'rejected',
+        performed_by: user?.id,
+        performed_by_name: performer?.full_name ?? user?.email ?? 'Unknown',
+        note: actionNote.trim() || null,
+      })
+
       showToast(action === 'approve' ? 'Request approved' : 'Request rejected')
       setActionModal(null)
       setActionNote('')
-      await loadRequests()
+      await Promise.all([loadRequests(), loadAuditLog()])
+    } catch (e) {
+      showToast(e.message, 'error')
+    }
+  }
+
+  const saveEmployee = async () => {
+    if (!empForm.full_name.trim()) { showToast('Name is required', 'error'); return }
+    try {
+      const payload = {
+        full_name: empForm.full_name.trim(),
+        role: empForm.role,
+        company: empForm.company.trim() || null,
+        department: empForm.department.trim() || null,
+        manager_id: empForm.manager_id || null,
+      }
+      const { error } = await supabase
+        .from('users')
+        .update(payload)
+        .eq('id', empEditing)
+      if (error) throw error
+      showToast('Employee updated')
+      setEmpModal(false)
+      setEmpEditing(null)
+      await Promise.all([loadEmpList(), loadEmployees()])
     } catch (e) {
       showToast(e.message, 'error')
     }
@@ -328,7 +412,9 @@ export default function LeaveAdminPanel() {
     loadAllowances(alYear)
     loadEmployees()
     loadRequests()
-  }, [loadLeaveTypes, loadEntitlements, loadAllowances, loadEmployees, loadRequests, alYear])
+    loadAuditLog()
+    loadEmpList()
+  }, [loadLeaveTypes, loadEntitlements, loadAllowances, loadEmployees, loadRequests, loadAuditLog, loadEmpList, alYear])
 
   const saveLeaveType = async () => {
     if (!ltForm.name.trim()) return
@@ -456,9 +542,11 @@ export default function LeaveAdminPanel() {
   const navItems = [
     { id: 'overview',     label: 'Overview',      dot: '#1D9E75' },
     { id: 'requests',     label: 'Requests',      dot: '#E24B4A' },
+    { id: 'employees',    label: 'Employees',     dot: '#6366F1' },
     { id: 'leave-types',  label: 'Leave types',   dot: '#378ADD' },
     { id: 'entitlements', label: 'Entitlements',  dot: '#BA7517' },
     { id: 'allowances',   label: 'Allowances',    dot: '#D4537E' },
+    { id: 'audit',        label: 'Audit log',     dot: '#6b7280' },
   ]
 
   return (
@@ -551,16 +639,14 @@ export default function LeaveAdminPanel() {
                       {r.start_date !== r.end_date && <> → {new Date(r.end_date).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })}</>}
                     </TD>
                     <TD style={{ whiteSpace: 'nowrap' }}>
-                      {r.hours_requested
-                        ? <>{r.hours_requested}h</>
-                        : <>{r.days_requested} day{r.days_requested === 1 ? '' : 's'}</>}
+                      {r.hours_requested ? `${r.hours_requested}h` : `${r.days_requested} day${r.days_requested === 1 ? '' : 's'}`}
                     </TD>
                     <TD style={{ color: '#6b7280', maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {r.reason || '—'}
                     </TD>
                     <TD style={{ maxWidth: 140, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                       {r.admin_note
-                        ? <span style={{ color: r.status === 'rejected' ? '#991b1b' : '#065f46' }}>{r.admin_note}</span>
+                        ? <span style={{ fontSize: 11, padding: '2px 7px', borderRadius: 5, ...(r.status === 'rejected' ? { background: '#FCEBEB', color: '#A32D2D' } : { background: '#E1F5EE', color: '#0F6E56' }) }}>{r.admin_note}</span>
                         : <span style={{ color: '#d1d5db' }}>—</span>}
                     </TD>
                     <TD>
@@ -579,6 +665,95 @@ export default function LeaveAdminPanel() {
                   </TR>
                 ))}
               </Table>
+            </div>
+          )}
+
+          {tab === 'employees' && (
+            <div>
+              <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', marginBottom: '1.25rem' }}>
+                <div>
+                  <div style={{ fontSize: 15, fontWeight: 500 }}>Employees</div>
+                  <div style={{ fontSize: 13, color: '#6b7280', marginTop: 2 }}>Manage employee details, roles, departments and managers</div>
+                </div>
+              </div>
+              <Table headers={['Name', 'Role', 'Company', 'Department', 'Manager', 'Actions']} empty="No employees found">
+                {empList.map(e => {
+                  const mgr = empList.find(m => m.id === e.manager_id)
+                  return (
+                    <TR key={e.id}>
+                      <TD><div style={{ fontWeight: 500 }}>{e.full_name}</div></TD>
+                      <TD><Badge variant={e.role === 'admin' ? 'blue' : e.role === 'manager' ? 'green' : 'gray'} style={{ textTransform: 'capitalize' }}>{e.role}</Badge></TD>
+                      <TD style={{ color: '#6b7280' }}>{e.company || '—'}</TD>
+                      <TD style={{ color: '#6b7280' }}>{e.department || '—'}</TD>
+                      <TD style={{ color: '#6b7280' }}>{mgr?.full_name || '—'}</TD>
+                      <TD>
+                        <Btn size="sm" onClick={() => {
+                          setEmpEditing(e.id)
+                          setEmpForm({
+                            full_name: e.full_name ?? '',
+                            role: e.role ?? 'employee',
+                            company: e.company ?? '',
+                            department: e.department ?? '',
+                            manager_id: e.manager_id ?? '',
+                          })
+                          setEmpModal(true)
+                        }}>Edit</Btn>
+                      </TD>
+                    </TR>
+                  )
+                })}
+              </Table>
+            </div>
+          )}
+
+          {tab === 'audit' && (
+            <div>
+              <div style={{ marginBottom: '1.25rem' }}>
+                <div style={{ fontSize: 15, fontWeight: 500 }}>Audit log</div>
+                <div style={{ fontSize: 13, color: '#6b7280', marginTop: 2 }}>Full history of who approved or rejected each leave request</div>
+              </div>
+              {auditLoading ? (
+                <div style={{ color: '#9ca3af', fontSize: 13, padding: '2rem', textAlign: 'center' }}>Loading…</div>
+              ) : (
+                <Table headers={['Date & time', 'Action', 'Employee', 'Leave', 'Duration', 'Actioned by', 'Note']} empty="No audit entries yet">
+                  {auditLog.map(a => {
+                    const req = a.leave_requests
+                    return (
+                      <TR key={a.id}>
+                        <TD style={{ whiteSpace: 'nowrap', color: '#6b7280', fontSize: 12 }}>
+                          {new Date(a.created_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
+                          <div style={{ fontSize: 11 }}>{new Date(a.created_at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}</div>
+                        </TD>
+                        <TD>
+                          <Badge variant={a.action === 'approved' ? 'green' : a.action === 'rejected' ? 'red' : 'gray'}>
+                            {a.action}
+                          </Badge>
+                        </TD>
+                        <TD style={{ fontWeight: 500 }}>{req?.user?.full_name ?? '—'}</TD>
+                        <TD>
+                          {req?.leave_types && (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                              <Swatch color={req.leave_types.color} />
+                              {req.leave_types.name}
+                            </div>
+                          )}
+                        </TD>
+                        <TD style={{ whiteSpace: 'nowrap' }}>
+                          {req ? (
+                            req.hours_requested
+                              ? `${req.hours_requested}h`
+                              : `${req.days_requested} day${req.days_requested === 1 ? '' : 's'}`
+                          ) : '—'}
+                        </TD>
+                        <TD style={{ fontWeight: 500, color: '#374151' }}>{a.performed_by_name ?? '—'}</TD>
+                        <TD style={{ color: '#6b7280', maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                          {a.note || <span style={{ color: '#d1d5db' }}>—</span>}
+                        </TD>
+                      </TR>
+                    )
+                  })}
+                </Table>
+              )}
             </div>
           )}
 
@@ -855,11 +1030,8 @@ export default function LeaveAdminPanel() {
         </div>
       </Modal>
 
-      <Modal
-        open={!!actionModal}
-        onClose={() => setActionModal(null)}
-        title={actionModal?.action === 'approve' ? 'Approve request' : 'Reject request'}
-      >
+      {/* ── Approve / Reject modal ── */}
+      <Modal open={!!actionModal} onClose={() => setActionModal(null)} title={actionModal?.action === 'approve' ? 'Approve request' : 'Reject request'}>
         <p style={{ fontSize: 13, color: '#6b7280', marginBottom: '1rem' }}>
           {actionModal?.action === 'approve'
             ? 'Optionally leave a note for the employee before approving.'
@@ -876,14 +1048,44 @@ export default function LeaveAdminPanel() {
         </Field>
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', borderTop: '0.5px solid #e5e7eb', paddingTop: '1rem' }}>
           <Btn size="sm" onClick={() => setActionModal(null)}>Cancel</Btn>
-          <Btn
-            size="sm"
-            variant={actionModal?.action === 'approve' ? 'primary' : 'danger'}
-            onClick={confirmAction}
-            disabled={actionModal?.action === 'reject' && !actionNote.trim()}
-          >
+          <Btn size="sm" variant={actionModal?.action === 'approve' ? 'primary' : 'danger'} onClick={confirmAction}
+            disabled={actionModal?.action === 'reject' && !actionNote.trim()}>
             {actionModal?.action === 'approve' ? 'Confirm approval' : 'Confirm rejection'}
           </Btn>
+        </div>
+      </Modal>
+
+      {/* ── Employee edit modal ── */}
+      <Modal open={empModal} onClose={() => setEmpModal(false)} title="Edit employee">
+        <Field label="Full name">
+          <input style={inputStyle} value={empForm.full_name} onChange={e => setEmpForm(f => ({ ...f, full_name: e.target.value }))} />
+        </Field>
+        <Field label="Role">
+          <select style={selectStyle} value={empForm.role} onChange={e => setEmpForm(f => ({ ...f, role: e.target.value }))}>
+            <option value="employee">Employee</option>
+            <option value="manager">Manager</option>
+            <option value="admin">Admin</option>
+          </select>
+        </Field>
+        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+          <Field label="Company">
+            <input style={inputStyle} value={empForm.company} onChange={e => setEmpForm(f => ({ ...f, company: e.target.value }))} placeholder="e.g. Axela" />
+          </Field>
+          <Field label="Department">
+            <input style={inputStyle} value={empForm.department} onChange={e => setEmpForm(f => ({ ...f, department: e.target.value }))} placeholder="e.g. Operations" />
+          </Field>
+        </div>
+        <Field label="Manager">
+          <select style={selectStyle} value={empForm.manager_id} onChange={e => setEmpForm(f => ({ ...f, manager_id: e.target.value }))}>
+            <option value="">No manager assigned</option>
+            {empList.filter(e => e.id !== empEditing && (e.role === 'manager' || e.role === 'admin')).map(e => (
+              <option key={e.id} value={e.id}>{e.full_name}</option>
+            ))}
+          </select>
+        </Field>
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', borderTop: '0.5px solid #e5e7eb', paddingTop: '1rem' }}>
+          <Btn size="sm" onClick={() => setEmpModal(false)}>Cancel</Btn>
+          <Btn size="sm" variant="primary" onClick={saveEmployee}>Save changes</Btn>
         </div>
       </Modal>
 
