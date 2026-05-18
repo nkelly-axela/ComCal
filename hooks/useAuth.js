@@ -1,23 +1,23 @@
 /**
  * src/hooks/useAuth.js
  * ─────────────────────────────────────────────────────────────
- * Hook that exposes the current Supabase session, the matching
- * profile row from public.users, and a signOut helper.
+ * Supabase auth hook — fast load, no double-mount lock issue.
  *
- * LOADING FIX:
- *   The previous version relied solely on onAuthStateChange,
- *   which only fires after Supabase emits an event. On a cold
- *   page load this could take several seconds, leaving the user
- *   staring at "Loading…" the whole time.
+ * Strategy:
+ *   1. Call getSession() once on mount to read the existing
+ *      session from localStorage. This is synchronous-ish and
+ *      resolves in <50ms — no loading screen for logged-in users.
+ *   2. Skip the INITIAL_SESSION event from onAuthStateChange
+ *      (it fires after getSession and would cause a duplicate
+ *      profile fetch and the gotrue lock contention warning).
+ *   3. Only react to SIGNED_IN, SIGNED_OUT, TOKEN_REFRESHED
+ *      events that happen after initial load.
  *
- *   Fix: call supabase.auth.getSession() immediately on mount.
- *   This resolves synchronously from the local token store in
- *   almost all cases — typically < 50ms. onAuthStateChange is
- *   kept alongside it to handle token refreshes, sign-in, and
- *   sign-out events that happen after initial load.
- *
- *   The result: the app unblocks as fast as a local read, with
- *   no visible loading screen for users who are already logged in.
+ * StrictMode note:
+ *   React StrictMode double-mounts in dev, which causes both
+ *   mounts to race for the Supabase auth lock simultaneously.
+ *   We removed StrictMode from main.jsx to avoid this. If you
+ *   re-enable it, you'll see the lock warning again.
  * ─────────────────────────────────────────────────────────────
  */
 
@@ -31,7 +31,7 @@ async function fetchProfile(uid) {
     .eq('id', uid)
     .maybeSingle()
 
-  // Graceful fallback if department/company columns don't exist yet
+  // Graceful fallback if columns don't exist yet
   if (error && /column .*(department|company)/i.test(error.message)) {
     const retry = await supabase
       .from('users')
@@ -43,7 +43,7 @@ async function fetchProfile(uid) {
   }
 
   if (error) {
-    console.error('fetchProfile error:', error)
+    console.error('fetchProfile error:', error.message)
     return null
   }
   return data ?? null
@@ -54,109 +54,94 @@ export function useAuth() {
   const [profile, setProfile] = useState(null)
   const [loading, setLoading] = useState(true)
 
-  // Guards against race conditions when multiple events fire quickly
-  const activeRef   = useRef(0)
-  const resolvedRef = useRef(false)
-
-  const resolve = useCallback((sessionId, u, prof) => {
-    if (sessionId !== activeRef.current) return
-    resolvedRef.current = true
-    setUser(u)
-    setProfile(prof)
-    setLoading(false)
-  }, [])
+  const bootstrappedRef = useRef(false) // true once getSession() has resolved
+  const cancelledRef    = useRef(false) // true after component unmounts
 
   useEffect(() => {
-    let cancelled = false
+    cancelledRef.current = false
 
-    // ── Step 1: Check for an existing session immediately ─────
-    // getSession() reads from localStorage/cookie — no network
-    // round-trip needed. This is what eliminates the loading screen
-    // for users who are already logged in.
+    // ── Bootstrap: read existing session immediately ───────────
     const bootstrap = async () => {
-      const sessionId = ++activeRef.current
-
       try {
-        const { data: { session }, error } = await supabase.auth.getSession()
-
-        if (cancelled) return
-        if (error) {
-          console.warn('getSession error:', error)
-          resolve(sessionId, null, null)
-          return
-        }
+        const { data: { session } } = await supabase.auth.getSession()
+        if (cancelledRef.current) return
 
         const u = session?.user ?? null
+        bootstrappedRef.current = true
 
         if (!u) {
-          // No session — show login immediately, don't wait
-          resolve(sessionId, null, null)
+          setUser(null)
+          setProfile(null)
+          setLoading(false)
           return
         }
 
-        // We have a user — set it now so the UI can start rendering
-        if (!cancelled && sessionId === activeRef.current) {
-          setUser(u)
-        }
-
-        // Fetch profile row (one Supabase query)
+        setUser(u)
         const prof = await fetchProfile(u.id)
-        if (!cancelled) resolve(sessionId, u, prof)
+        if (cancelledRef.current) return
+        setProfile(prof)
+        setLoading(false)
 
-      } catch (e) {
-        console.error('bootstrap error:', e)
-        if (!cancelled) resolve(activeRef.current, null, null)
+      } catch (err) {
+        console.error('useAuth bootstrap error:', err)
+        if (!cancelledRef.current) {
+          setUser(null)
+          setProfile(null)
+          setLoading(false)
+        }
       }
     }
 
     bootstrap()
 
-    // ── Step 2: Listen for subsequent auth events ─────────────
-    // Handles sign-in, sign-out, token refresh after bootstrap.
+    // ── Event listener: handle post-load auth changes ──────────
     const { data: { subscription } } = supabase.auth.onAuthStateChange(
       async (event, session) => {
-        // Ignore the INITIAL_SESSION event — bootstrap already handled it
-        // (avoids a duplicate profile fetch on load)
+        // Skip INITIAL_SESSION — bootstrap() already handled it.
+        // This is the key fix: without this guard, both bootstrap()
+        // and the INITIAL_SESSION event would race for the auth lock.
         if (event === 'INITIAL_SESSION') return
 
-        const sessionId = ++activeRef.current
+        // Also skip if bootstrap hasn't resolved yet — it will set
+        // state itself when it finishes.
+        if (!bootstrappedRef.current) return
 
-        if (event === 'SIGNED_OUT' || (event === 'TOKEN_REFRESHED' && !session)) {
-          resolve(sessionId, null, null)
+        if (cancelledRef.current) return
+
+        const u = session?.user ?? null
+
+        if (!u) {
+          setUser(null)
+          setProfile(null)
+          setLoading(false)
           return
         }
 
-        const u = session?.user ?? null
-        if (!u) { resolve(sessionId, null, null); return }
-
-        if (sessionId === activeRef.current) setUser(u)
-
+        setUser(u)
         const prof = await fetchProfile(u.id)
-        resolve(sessionId, u, prof)
+        if (!cancelledRef.current) {
+          setProfile(prof)
+          setLoading(false)
+        }
       }
     )
 
-    // ── Safety net: 5s timeout (down from 8s) ─────────────────
-    // Should never be needed given bootstrap(), but keeps the app
-    // from hanging if something goes wrong with Supabase client init.
+    // Fallback timeout — should never be needed now
     const timeoutId = setTimeout(() => {
-      if (!resolvedRef.current) {
-        console.warn('useAuth: 5s timeout — forcing loading=false')
+      if (!bootstrappedRef.current && !cancelledRef.current) {
+        console.warn('useAuth: 6s timeout — forcing loading=false')
         setLoading(false)
       }
-    }, 5000)
+    }, 6000)
 
     return () => {
-      cancelled = true
+      cancelledRef.current = true
       subscription.unsubscribe()
       clearTimeout(timeoutId)
     }
-  }, [resolve])
+  }, [])
 
   const signOut = useCallback(async () => {
-    // Clear state immediately — don't wait for the Supabase call
-    activeRef.current++
-    resolvedRef.current = true
     setUser(null)
     setProfile(null)
     setLoading(false)
