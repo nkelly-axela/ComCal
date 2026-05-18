@@ -1,4 +1,3 @@
-[README.md](https://github.com/user-attachments/files/27092448/README.md)
 # Leave Management
 
 A small, self-contained leave management app for small teams. Employees request leave, managers and admins approve and manage allowances, and everyone can see a team-wide calendar of approved time off.
