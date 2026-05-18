@@ -227,6 +227,22 @@ export default function LeaveAdminPanel() {
   const [holidayYearStart, setHolidayYearStart] = useState('01-01')
   const [holidayYearSaving, setHolidayYearSaving] = useState(false)
 
+  // Rollover settings
+  const [rolloverEnabled,      setRolloverEnabled]      = useState(true)
+  const [rolloverMaxDays,      setRolloverMaxDays]       = useState('5')
+  const [rolloverExpiryMonths, setRolloverExpiryMonths] = useState('3')
+  const [rolloverSaving,       setRolloverSaving]        = useState(false)
+  const [rolloverPreview,      setRolloverPreview]       = useState(null)
+  const [rolloverRunning,      setRolloverRunning]       = useState(false)
+
+  // Public holidays
+  const [publicHolidays,    setPublicHolidays]    = useState([])
+  const [phLoading,         setPhLoading]          = useState(false)
+  const [phYear,            setPhYear]             = useState(new Date().getFullYear())
+  const [phRegion,          setPhRegion]           = useState('england-and-wales')
+  const [phImporting,       setPhImporting]        = useState(false)
+  const [phApiHolidays,     setPhApiHolidays]      = useState([]) // fetched from gov.uk, not yet saved
+
   const showToast = (msg, type = 'success') => {
     setToast({ msg, type })
     setTimeout(() => setToast(null), 3000)
@@ -361,11 +377,132 @@ export default function LeaveAdminPanel() {
       if (data) {
         const hys = data.find(s => s.key === 'holiday_year_start')
         if (hys) setHolidayYearStart(hys.value)
+        const re  = data.find(s => s.key === 'rollover_enabled')
+        if (re)  setRolloverEnabled(re.value === 'true')
+        const rm  = data.find(s => s.key === 'rollover_max_days')
+        if (rm)  setRolloverMaxDays(rm.value)
+        const rx  = data.find(s => s.key === 'rollover_expiry_months')
+        if (rx)  setRolloverExpiryMonths(rx.value)
       }
     } catch (e) {
       // Settings table may not exist yet — silently ignore
     }
   }, [])
+
+  const saveSetting = async (key, value) => {
+    const { data: { user } } = await supabase.auth.getUser()
+    const { error } = await supabase
+      .from('company_settings')
+      .upsert({ key, value: String(value), updated_by: user?.id, updated_at: new Date().toISOString() },
+        { onConflict: 'key' })
+    if (error) throw error
+  }
+
+  const saveRolloverSettings = async () => {
+    setRolloverSaving(true)
+    try {
+      await Promise.all([
+        saveSetting('rollover_enabled',       String(rolloverEnabled)),
+        saveSetting('rollover_max_days',      rolloverMaxDays),
+        saveSetting('rollover_expiry_months', rolloverExpiryMonths),
+      ])
+      showToast('Rollover settings saved')
+    } catch (e) {
+      showToast(e.message, 'error')
+    } finally {
+      setRolloverSaving(false)
+    }
+  }
+
+  const previewRollover = async () => {
+    setRolloverRunning(true)
+    setRolloverPreview(null)
+    try {
+      const { data: { user } } = await supabase.auth.getUser()
+      const { data, error } = await supabase.rpc('process_year_end_rollover', {
+        p_from_year:    currentYear,
+        p_performed_by: user?.id,
+      })
+      if (error) throw error
+      setRolloverPreview(data ?? [])
+      showToast(`Rollover processed — ${(data??[]).filter(r=>!r.skipped).length} rows created`)
+    } catch (e) {
+      showToast(e.message, 'error')
+    } finally {
+      setRolloverRunning(false)
+    }
+  }
+
+  const loadPublicHolidays = useCallback(async () => {
+    setPhLoading(true)
+    try {
+      const { data, error } = await supabase
+        .from('public_holidays')
+        .select('*')
+        .order('date', { ascending: true })
+      if (error) throw error
+      setPublicHolidays(data ?? [])
+    } catch (e) {
+      // Table may not exist yet
+      setPublicHolidays([])
+    } finally {
+      setPhLoading(false)
+    }
+  }, [])
+
+  // Fetch from gov.uk API — free, no key needed
+  const fetchFromGovUK = async () => {
+    setPhImporting(true)
+    setPhApiHolidays([])
+    try {
+      const res  = await fetch('https://www.gov.uk/bank-holidays.json')
+      const data = await res.json()
+      const regionKey = phRegion === 'england-and-wales' ? 'england-and-wales'
+        : phRegion === 'scotland' ? 'scotland' : 'northern-ireland'
+      const events = data[regionKey]?.events ?? []
+      const filtered = events
+        .filter(e => new Date(e.date).getFullYear() === phYear)
+        .map(e => ({ date: e.date, name: e.title, notes: e.notes ?? '', bunting: e.bunting ?? false }))
+      setPhApiHolidays(filtered)
+      showToast(`Found ${filtered.length} holidays for ${phYear}`)
+    } catch (e) {
+      showToast('Failed to fetch from gov.uk: ' + e.message, 'error')
+    } finally {
+      setPhImporting(false)
+    }
+  }
+
+  const importHolidays = async () => {
+    if (!phApiHolidays.length) return
+    setPhImporting(true)
+    try {
+      const rows = phApiHolidays.map(h => ({
+        date:    h.date,
+        name:    h.name,
+        region:  phRegion,
+        notes:   h.notes || null,
+        bunting: h.bunting,
+      }))
+      const { error } = await supabase
+        .from('public_holidays')
+        .upsert(rows, { onConflict: 'date,region' })
+      if (error) throw error
+      showToast(`Imported ${rows.length} public holidays`)
+      setPhApiHolidays([])
+      await loadPublicHolidays()
+    } catch (e) {
+      showToast(e.message, 'error')
+    } finally {
+      setPhImporting(false)
+    }
+  }
+
+  const deleteHoliday = async (id) => {
+    const { error } = await supabase.from('public_holidays').delete().eq('id', id)
+    if (error) { showToast(error.message, 'error'); return }
+    showToast('Holiday removed')
+    setPublicHolidays(prev => prev.filter(h => h.id !== id))
+  }
 
   const saveHolidayYearStart = async (value) => {
     setHolidayYearSaving(true)
@@ -450,7 +587,8 @@ export default function LeaveAdminPanel() {
     loadRequests()
     loadAuditLog()
     loadEmpList()
-  }, [loadSettings, loadLeaveTypes, loadEntitlements, loadAllowances, loadEmployees, loadRequests, loadAuditLog, loadEmpList, alYear])
+    loadPublicHolidays()
+  }, [loadSettings, loadLeaveTypes, loadEntitlements, loadAllowances, loadEmployees, loadRequests, loadAuditLog, loadEmpList, loadPublicHolidays, alYear])
 
   const saveLeaveType = async () => {
     if (!ltForm.name.trim()) return
@@ -582,8 +720,10 @@ export default function LeaveAdminPanel() {
     { id: 'leave-types',  label: 'Leave types',   dot: '#378ADD' },
     { id: 'entitlements', label: 'Entitlements',  dot: '#BA7517' },
     { id: 'allowances',   label: 'Allowances',    dot: '#D4537E' },
-    { id: 'audit',        label: 'Audit log',     dot: '#6b7280' },
-    { id: 'ai-review',    label: 'AI review',     dot: '#7F77DD' },
+    { id: 'audit',            label: 'Audit log',       dot: '#6b7280' },
+    { id: 'public-holidays',  label: 'Public holidays', dot: '#0EA5E9' },
+    { id: 'rollover',         label: 'Rollover rules',  dot: '#8B5CF6' },
+    { id: 'ai-review',        label: 'AI review',       dot: '#7F77DD' },
   ]
 
   return (
@@ -793,6 +933,212 @@ export default function LeaveAdminPanel() {
                     )
                   })}
                 </Table>
+              )}
+            </div>
+          )}
+
+          {tab === 'public-holidays' && (
+            <div>
+              <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', marginBottom:'1.25rem' }}>
+                <div>
+                  <div style={{ fontSize:15, fontWeight:500 }}>Public holidays</div>
+                  <div style={{ fontSize:13, color:'#6b7280', marginTop:2 }}>
+                    Import UK bank holidays from gov.uk. These are excluded from leave day calculations.
+                  </div>
+                </div>
+              </div>
+
+              {/* Import controls */}
+              <div style={{ border:'0.5px solid #e5e7eb', borderRadius:10, padding:'1.25rem', background:'#fafafa', marginBottom:'1.25rem' }}>
+                <div style={{ fontSize:13, fontWeight:500, marginBottom:'0.75rem' }}>Import from gov.uk</div>
+                <div style={{ display:'flex', gap:10, flexWrap:'wrap', alignItems:'flex-end', marginBottom:'0.75rem' }}>
+                  <div>
+                    <label style={{ display:'block', fontSize:11, color:'#6b7280', marginBottom:4 }}>Year</label>
+                    <select value={phYear} onChange={e => setPhYear(+e.target.value)} style={{ ...selectStyle, width:100 }}>
+                      {[currentYear-1, currentYear, currentYear+1, currentYear+2].map(y =>
+                        <option key={y} value={y}>{y}</option>
+                      )}
+                    </select>
+                  </div>
+                  <div>
+                    <label style={{ display:'block', fontSize:11, color:'#6b7280', marginBottom:4 }}>Region</label>
+                    <select value={phRegion} onChange={e => setPhRegion(e.target.value)} style={{ ...selectStyle, width:200 }}>
+                      <option value="england-and-wales">England &amp; Wales</option>
+                      <option value="scotland">Scotland</option>
+                      <option value="northern-ireland">Northern Ireland</option>
+                    </select>
+                  </div>
+                  <Btn variant="primary" size="sm" onClick={fetchFromGovUK} disabled={phImporting}>
+                    {phImporting && !phApiHolidays.length ? 'Fetching…' : 'Fetch from gov.uk'}
+                  </Btn>
+                </div>
+
+                {/* Preview fetched holidays before saving */}
+                {phApiHolidays.length > 0 && (
+                  <div>
+                    <div style={{ fontSize:12, color:'#6b7280', marginBottom:'0.5rem' }}>
+                      {phApiHolidays.length} holidays found — review then import:
+                    </div>
+                    <div style={{ display:'flex', flexWrap:'wrap', gap:6, marginBottom:'0.75rem' }}>
+                      {phApiHolidays.map(h => (
+                        <span key={h.date} style={{ fontSize:11, padding:'3px 10px', borderRadius:12, background:'#E6F1FB', color:'#185FA5', border:'0.5px solid #bfdbfe' }}>
+                          {new Date(h.date + 'T00:00:00').toLocaleDateString('en-GB', { day:'numeric', month:'short' })} — {h.name}
+                        </span>
+                      ))}
+                    </div>
+                    <div style={{ display:'flex', gap:8 }}>
+                      <Btn variant="primary" size="sm" onClick={importHolidays} disabled={phImporting}>
+                        {phImporting ? 'Importing…' : `Import ${phApiHolidays.length} holidays`}
+                      </Btn>
+                      <Btn size="sm" onClick={() => setPhApiHolidays([])}>Discard</Btn>
+                    </div>
+                  </div>
+                )}
+              </div>
+
+              {/* Saved holidays */}
+              <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:'0.5rem' }}>
+                <div style={{ fontSize:13, fontWeight:500 }}>
+                  Saved holidays ({publicHolidays.filter(h => new Date(h.date).getFullYear() === phYear && h.region === phRegion).length} for {phYear})
+                </div>
+              </div>
+              {phLoading ? (
+                <div style={{ color:'#9ca3af', fontSize:13, padding:'1.5rem', textAlign:'center' }}>Loading…</div>
+              ) : (
+                <Table headers={['Date','Name','Region','Notes','Actions']} empty={`No public holidays saved for ${phYear}. Use the import tool above.`}>
+                  {publicHolidays
+                    .filter(h => new Date(h.date + 'T00:00:00').getFullYear() === phYear && h.region === phRegion)
+                    .map(h => (
+                    <TR key={h.id}>
+                      <TD style={{ whiteSpace:'nowrap', fontWeight:500 }}>
+                        {new Date(h.date + 'T00:00:00').toLocaleDateString('en-GB', { weekday:'short', day:'numeric', month:'short', year:'numeric' })}
+                      </TD>
+                      <TD>
+                        <div style={{ display:'flex', alignItems:'center', gap:6 }}>
+                          {h.bunting && <span title="Bunting day" style={{ fontSize:14 }}>🎉</span>}
+                          {h.name}
+                        </div>
+                      </TD>
+                      <TD>
+                        <span style={{ fontSize:11, padding:'2px 8px', borderRadius:12, background:'#f3f4f6', color:'#6b7280' }}>
+                          {h.region === 'england-and-wales' ? 'England & Wales' : h.region === 'scotland' ? 'Scotland' : 'N. Ireland'}
+                        </span>
+                      </TD>
+                      <TD style={{ color:'#9ca3af', fontSize:12 }}>{h.notes || '—'}</TD>
+                      <TD>
+                        <Btn size="sm" variant="danger" onClick={() => deleteHoliday(h.id)}>Remove</Btn>
+                      </TD>
+                    </TR>
+                  ))}
+                </Table>
+              )}
+            </div>
+          )}
+
+          {tab === 'rollover' && (
+            <div>
+              <div style={{ marginBottom:'1.25rem' }}>
+                <div style={{ fontSize:15, fontWeight:500 }}>Rollover rules</div>
+                <div style={{ fontSize:13, color:'#6b7280', marginTop:2 }}>
+                  Configure how unused annual leave carries over into the new holiday year.
+                </div>
+              </div>
+
+              {/* Settings card */}
+              <div style={{ border:'0.5px solid #e5e7eb', borderRadius:10, padding:'1.25rem', background:'#fafafa', marginBottom:'1.25rem' }}>
+                <div style={{ fontSize:13, fontWeight:500, marginBottom:'1rem' }}>Rollover policy</div>
+
+                <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:'1rem', padding:'0.75rem', background:'#fff', borderRadius:8, border:'0.5px solid #e5e7eb' }}>
+                  <div>
+                    <div style={{ fontSize:13, fontWeight:500 }}>Enable rollover</div>
+                    <div style={{ fontSize:12, color:'#6b7280', marginTop:2 }}>Allow unused leave to carry over to the next holiday year</div>
+                  </div>
+                  <Toggle checked={rolloverEnabled} onChange={setRolloverEnabled} />
+                </div>
+
+                <div style={{ display:'grid', gridTemplateColumns:'1fr 1fr', gap:12, marginBottom:'1rem', opacity: rolloverEnabled ? 1 : 0.4, pointerEvents: rolloverEnabled ? 'auto' : 'none' }}>
+                  <div style={{ background:'#fff', borderRadius:8, border:'0.5px solid #e5e7eb', padding:'1rem' }}>
+                    <label style={{ display:'block', fontSize:12, color:'#6b7280', marginBottom:4 }}>Maximum rollover days</label>
+                    <input
+                      type="number" min="0" max="30" step="0.5"
+                      value={rolloverMaxDays}
+                      onChange={e => setRolloverMaxDays(e.target.value)}
+                      style={{ ...inputStyle, fontSize:15, fontWeight:500, width:80 }}
+                    />
+                    <div style={{ fontSize:11, color:'#9ca3af', marginTop:6 }}>
+                      Max days any employee can carry over. UK statutory guidance is typically 5 days.
+                    </div>
+                  </div>
+
+                  <div style={{ background:'#fff', borderRadius:8, border:'0.5px solid #e5e7eb', padding:'1rem' }}>
+                    <label style={{ display:'block', fontSize:12, color:'#6b7280', marginBottom:4 }}>Expiry (months after new year)</label>
+                    <input
+                      type="number" min="1" max="12"
+                      value={rolloverExpiryMonths}
+                      onChange={e => setRolloverExpiryMonths(e.target.value)}
+                      style={{ ...inputStyle, fontSize:15, fontWeight:500, width:80 }}
+                    />
+                    <div style={{ fontSize:11, color:'#9ca3af', marginTop:6 }}>
+                      Rolled-over days expire this many months into the new year. e.g. 3 = expires 31 March.
+                    </div>
+                  </div>
+                </div>
+
+                {rolloverEnabled && (
+                  <div style={{ fontSize:12, color:'#065f46', background:'#d1fae5', borderRadius:8, padding:'0.6rem 0.85rem', marginBottom:'1rem', border:'0.5px solid #6ee7b7' }}>
+                    Current policy: up to <strong>{rolloverMaxDays} days</strong> can be carried over,
+                    expiring <strong>{rolloverExpiryMonths} month{+rolloverExpiryMonths!==1?'s':''}</strong> after the new holiday year starts.
+                  </div>
+                )}
+
+                <div style={{ display:'flex', gap:8 }}>
+                  <Btn variant="primary" size="sm" onClick={saveRolloverSettings} disabled={rolloverSaving}>
+                    {rolloverSaving ? 'Saving…' : 'Save rollover policy'}
+                  </Btn>
+                </div>
+              </div>
+
+              {/* Run rollover */}
+              <div style={{ border:'0.5px solid #e5e7eb', borderRadius:10, padding:'1.25rem', marginBottom:'1.25rem' }}>
+                <div style={{ fontSize:13, fontWeight:500, marginBottom:4 }}>Run year-end rollover</div>
+                <div style={{ fontSize:12, color:'#6b7280', marginBottom:'1rem' }}>
+                  Processes {currentYear} → {currentYear+1} rollover for all employees.
+                  Creates new allowance rows for the carried-over days, capped at your policy above.
+                  Safe to re-run — existing rollover rows are skipped.
+                </div>
+                <div style={{ fontSize:12, color:'#854F0B', background:'#FAEEDA', borderRadius:8, padding:'0.6rem 0.85rem', marginBottom:'1rem', border:'0.5px solid #fcd34d' }}>
+                  ⚠ Run this after the last day of your holiday year, before seeding {currentYear+1} allowances.
+                </div>
+                <Btn variant="primary" size="sm" onClick={previewRollover} disabled={rolloverRunning || !rolloverEnabled}>
+                  {rolloverRunning ? 'Processing…' : `Process ${currentYear} → ${currentYear+1} rollover`}
+                </Btn>
+              </div>
+
+              {/* Rollover preview results */}
+              {rolloverPreview && (
+                <div>
+                  <div style={{ fontSize:13, fontWeight:500, marginBottom:'0.75rem' }}>
+                    Rollover results — {rolloverPreview.filter(r=>!r.skipped).length} rows created, {rolloverPreview.filter(r=>r.skipped).length} skipped
+                  </div>
+                  <Table headers={['Employee','Leave type','Unused','Rolled over','Expiry','Status']} empty="No results">
+                    {rolloverPreview.map((r, i) => (
+                      <TR key={i}>
+                        <TD style={{ fontWeight:500 }}>{r.user_name}</TD>
+                        <TD>{r.leave_type_name}</TD>
+                        <TD>{r.unused_days}d</TD>
+                        <TD><strong style={{ color: r.skipped ? '#9ca3af' : '#0F6E56' }}>{r.rolled_days}d</strong></TD>
+                        <TD style={{ fontSize:12, color:'#6b7280' }}>
+                          {r.expiry_date ? new Date(r.expiry_date).toLocaleDateString('en-GB', { day:'numeric', month:'short', year:'numeric' }) : '—'}
+                        </TD>
+                        <TD>
+                          {r.skipped
+                            ? <Badge variant="gray">{r.skip_reason}</Badge>
+                            : <Badge variant="green">Created</Badge>}
+                        </TD>
+                      </TR>
+                    ))}
+                  </Table>
+                </div>
               )}
             </div>
           )}
