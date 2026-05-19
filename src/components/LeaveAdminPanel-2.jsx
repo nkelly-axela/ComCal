@@ -405,31 +405,37 @@ export default function LeaveAdminPanel() {
     setAddUserBusy(true)
     setInviteLink(null)
     try {
-      const { data: { user: currentUser } } = await supabase.auth.getUser()
+      const { data: { session } } = await supabase.auth.getSession()
+      if (!session) throw new Error('Not authenticated')
 
-      // Step 1: Create invite token row
-      const { data: invite, error: invErr } = await supabase
-        .from('invite_tokens')
-        .upsert({
-          email,
-          full_name:   name,
-          role:        addUserForm.role,
-          department:  addUserForm.department.trim() || null,
-          company:     addUserForm.company.trim()    || null,
-          manager_id:  addUserForm.manager_id        || null,
-          invited_by:  currentUser?.id,
-          expires_at:  new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
-          accepted_at: null,
-        }, { onConflict: 'email', ignoreDuplicates: false })
-        .select()
-        .single()
-      if (invErr) throw invErr
+      // Call the Edge Function — uses service role key server-side
+      // so public sign-ups can be disabled in Supabase Auth settings
+      const res = await fetch(
+        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/invite-user`,
+        {
+          method:  'POST',
+          headers: {
+            'Content-Type':  'application/json',
+            'Authorization': `Bearer ${session.access_token}`,
+            'apikey':        import.meta.env.VITE_SUPABASE_ANON_KEY,
+          },
+          body: JSON.stringify({
+            email,
+            full_name:  name,
+            role:       addUserForm.role,
+            department: addUserForm.department.trim() || null,
+            company:    addUserForm.company.trim()    || null,
+            manager_id: addUserForm.manager_id        || null,
+          }),
+        }
+      )
 
-      // Build the invite link — points to your app's /invite route
-      const baseUrl = window.location.origin
-      const link = `${baseUrl}/invite?token=${invite.token}`
-      setInviteLink({ link, email, name })
-      showToast(`Invite created for ${name}`)
+      const json = await res.json()
+      if (!res.ok) throw new Error(json.error ?? 'Invite failed')
+
+      // Show success — no link to copy, Supabase sends the email directly
+      setInviteLink({ email, name, emailSent: true })
+      showToast(`Invite email sent to ${email}`)
       await loadPendingInvites()
       await loadEmpList()
 
@@ -1647,26 +1653,21 @@ export default function LeaveAdminPanel() {
       <Modal open={addUserModal} onClose={() => { setAddUserModal(false); setInviteLink(null) }} title="Add user">
 
         {inviteLink ? (
-          /* Success state — show invite link */
+          /* Success state — invite email sent by Supabase */
           <div>
-            <div style={{ fontSize: 13, color: '#065f46', background: '#d1fae5', borderRadius: 8, padding: '0.75rem', marginBottom: '1rem', border: '0.5px solid #6ee7b7' }}>
-              ✓ Invite created for <strong>{inviteLink.name}</strong> ({inviteLink.email})
+            <div style={{ fontSize:32, textAlign:'center', marginBottom:8 }}>✉️</div>
+            <div style={{ fontSize:14, fontWeight:500, textAlign:'center', marginBottom:8 }}>
+              Invite sent to {inviteLink.name}
             </div>
-            <div style={{ fontSize: 13, fontWeight: 500, marginBottom: '0.5rem' }}>Share this link with them:</div>
-            <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: '1rem' }}>
-              <input
-                readOnly
-                value={inviteLink.link}
-                style={{ ...inputStyle, fontSize: 11, color: '#6b7280', flex: 1 }}
-                onClick={e => e.target.select()}
-              />
-              <Btn size="sm" variant="primary" onClick={() => copyInviteLink(inviteLink.link)}>Copy</Btn>
+            <div style={{ fontSize:13, color:'#065f46', background:'#d1fae5', borderRadius:8, padding:'0.75rem', marginBottom:'1rem', border:'0.5px solid #6ee7b7', textAlign:'center' }}>
+              An email has been sent to <strong>{inviteLink.email}</strong> with a sign-in link.
             </div>
-            <div style={{ fontSize: 12, color: '#6b7280', marginBottom: '1rem', lineHeight: 1.6 }}>
-              When they sign up using this link, their account will be automatically configured
-              with the role and department you set. The link expires in 7 days.
+            <div style={{ fontSize:12, color:'#6b7280', marginBottom:'1rem', lineHeight:1.6 }}>
+              When they click the link in the email, their account will be automatically
+              configured with the role and department you set. The link expires in 24 hours.
+              If they don't receive it, check their spam folder or resend from this panel.
             </div>
-            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', borderTop: '0.5px solid #e5e7eb', paddingTop: '1rem' }}>
+            <div style={{ display:'flex', gap:8, justifyContent:'flex-end', borderTop:'0.5px solid #e5e7eb', paddingTop:'1rem' }}>
               <Btn size="sm" onClick={() => {
                 setAddUserForm({ full_name:'', email:'', role:'employee', department:'', company:'', manager_id:'' })
                 setInviteLink(null)
