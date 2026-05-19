@@ -425,19 +425,6 @@ export default function LeaveAdminPanel() {
         .single()
       if (invErr) throw invErr
 
-      // Step 2: Also try to create a public.users stub so the user
-      // can log in immediately after signing up without needing to
-      // accept the invite manually (the auth trigger handles this,
-      // but this is a belt-and-braces pre-seed for faster onboarding)
-      await supabase.from('users').upsert({
-        email,
-        full_name:  name,
-        role:       addUserForm.role,
-        department: addUserForm.department.trim() || null,
-        company:    addUserForm.company.trim()    || null,
-        manager_id: addUserForm.manager_id        || null,
-      }, { onConflict: 'email', ignoreDuplicates: true })
-
       // Build the invite link — points to your app's /invite route
       const baseUrl = window.location.origin
       const link = `${baseUrl}/invite?token=${invite.token}`
