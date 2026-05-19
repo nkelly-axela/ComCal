@@ -209,6 +209,80 @@ export default function LeaveUserPanel({ userId, fullName }) {
     await Promise.all([loadRequests(), loadBalances()])
   }
 
+  const downloadICS = (r) => {
+    const pad  = n => String(n).padStart(2, '0')
+    const toICSDate = dateStr => {
+      const d = new Date(dateStr + 'T00:00:00')
+      return `${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}`
+    }
+    // For all-day events ICS uses DATE not DATETIME, and end date is exclusive
+    const endExclusive = dateStr => {
+      const d = new Date(dateStr + 'T00:00:00')
+      d.setDate(d.getDate() + 1)
+      return `${d.getFullYear()}${pad(d.getMonth()+1)}${pad(d.getDate())}`
+    }
+    const now = new Date()
+    const stamp = `${now.getFullYear()}${pad(now.getMonth()+1)}${pad(now.getDate())}T${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}Z`
+    const uid   = `leave-${r.id}@axela-leave`
+
+    let dtStart, dtEnd, summary
+    if (r.hours_requested) {
+      // Hourly leave — use timed event
+      dtStart  = `DTSTART;TZID=Europe/London:${toICSDate(r.start_date)}T090000`
+      dtEnd    = `DTEND;TZID=Europe/London:${toICSDate(r.start_date)}T${pad(9 + Math.floor(r.hours_requested))}0000`
+      summary  = `${r.leave_types?.name ?? 'Leave'} (${r.hours_requested}h)`
+    } else {
+      // Full-day leave — all-day event
+      dtStart  = `DTSTART;VALUE=DATE:${toICSDate(r.start_date)}`
+      dtEnd    = `DTEND;VALUE=DATE:${endExclusive(r.end_date)}`
+      summary  = r.start_date === r.end_date
+        ? `${r.leave_types?.name ?? 'Leave'}`
+        : `${r.leave_types?.name ?? 'Leave'} (${r.days_requested} days)`
+    }
+
+    const description = [
+      `Type: ${r.leave_types?.name ?? 'Leave'}`,
+      r.hours_requested ? `Duration: ${r.hours_requested} hours` : `Duration: ${r.days_requested} day${r.days_requested===1?'':'s'}`,
+      r.reason ? `Note: ${r.reason}` : null,
+      `Status: ${r.status}`,
+    ].filter(Boolean).join('\\n')
+
+    const ics = [
+      'BEGIN:VCALENDAR',
+      'VERSION:2.0',
+      'PRODID:-//Axela Leave Management//EN',
+      'CALSCALE:GREGORIAN',
+      'METHOD:PUBLISH',
+      'BEGIN:VEVENT',
+      `UID:${uid}`,
+      `DTSTAMP:${stamp}`,
+      dtStart,
+      dtEnd,
+      `SUMMARY:${summary}`,
+      `DESCRIPTION:${description}`,
+      'STATUS:CONFIRMED',
+      'TRANSP:OPAQUE',
+      'BEGIN:VALARM',
+      'TRIGGER:-P1D',
+      'ACTION:DISPLAY',
+      `DESCRIPTION:Reminder: ${summary} tomorrow`,
+      'END:VALARM',
+      'END:VEVENT',
+      'END:VCALENDAR',
+    ].join('\r\n')
+
+    const blob = new Blob([ics], { type: 'text/calendar;charset=utf-8' })
+    const url  = URL.createObjectURL(blob)
+    const a    = document.createElement('a')
+    a.href     = url
+    a.download = `leave-${r.start_date}${r.start_date !== r.end_date ? '-to-'+r.end_date : ''}.ics`
+    document.body.appendChild(a)
+    a.click()
+    document.body.removeChild(a)
+    URL.revokeObjectURL(url)
+    showToast('Calendar file downloaded')
+  }
+
   const previewDays = calcBusinessDays(form.start, form.end)
 
   // ─────────────────────────────────────────────────────────────
@@ -285,9 +359,19 @@ export default function LeaveUserPanel({ userId, fullName }) {
                     : <span style={{ color:'#d1d5db' }}>—</span>}
                 </TD>
                 <TD>
-                  {r.status==='pending'
-                    ? <Btn size="sm" variant="danger" onClick={()=>cancelRequest(r.id)}>Cancel</Btn>
-                    : <span style={{ color:'#d1d5db' }}>—</span>}
+                  <div style={{ display:'flex', gap:6, alignItems:'center' }}>
+                    {r.status === 'pending' && (
+                      <Btn size="sm" variant="danger" onClick={() => cancelRequest(r.id)}>Cancel</Btn>
+                    )}
+                    {(r.status === 'approved' || r.status === 'pending') && !r.hours_requested && (
+                      <Btn size="sm" onClick={() => downloadICS(r)} title="Add to calendar">
+                        📅 .ics
+                      </Btn>
+                    )}
+                    {r.status === 'cancelled' || r.status === 'rejected' ? (
+                      <span style={{ color:'#d1d5db' }}>—</span>
+                    ) : null}
+                  </div>
                 </TD>
               </TR>
             )
