@@ -221,6 +221,14 @@ export default function LeaveAdminPanel() {
   const [empEditing, setEmpEditing] = useState(null)
   const [empForm, setEmpForm] = useState({ full_name: '', email: '', role: 'employee', company: '', department: '', manager_id: '' })
 
+  // Add user / invite state
+  const [addUserModal,   setAddUserModal]   = useState(false)
+  const [addUserBusy,    setAddUserBusy]    = useState(false)
+  const [addUserForm,    setAddUserForm]    = useState({ full_name:'', email:'', role:'employee', department:'', company:'', manager_id:'' })
+  const [inviteLink,     setInviteLink]     = useState(null) // shown after invite created
+  const [pendingInvites, setPendingInvites] = useState([])
+  const [invitesLoading, setInvitesLoading] = useState(false)
+
   const [seedLoading, setSeedLoading] = useState(false)
   const [toast, setToast] = useState(null)
 
@@ -367,6 +375,97 @@ export default function LeaveAdminPanel() {
     } catch (e) {
       showToast(e.message, 'error')
     }
+  }
+
+  const loadPendingInvites = useCallback(async () => {
+    setInvitesLoading(true)
+    try {
+      const { data, error } = await supabase
+        .from('invite_tokens')
+        .select('id, email, full_name, role, department, company, token, expires_at, accepted_at, created_at')
+        .is('accepted_at', null)
+        .gt('expires_at', new Date().toISOString())
+        .order('created_at', { ascending: false })
+      if (error) throw error
+      setPendingInvites(data ?? [])
+    } catch {
+      setPendingInvites([])
+    } finally {
+      setInvitesLoading(false)
+    }
+  }, [])
+
+  const createUser = async () => {
+    const email = addUserForm.email.trim().toLowerCase()
+    const name  = addUserForm.full_name.trim()
+    if (!name)  { showToast('Full name is required', 'error'); return }
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      showToast('Valid email is required', 'error'); return
+    }
+    setAddUserBusy(true)
+    setInviteLink(null)
+    try {
+      const { data: { user: currentUser } } = await supabase.auth.getUser()
+
+      // Step 1: Create invite token row
+      const { data: invite, error: invErr } = await supabase
+        .from('invite_tokens')
+        .upsert({
+          email,
+          full_name:   name,
+          role:        addUserForm.role,
+          department:  addUserForm.department.trim() || null,
+          company:     addUserForm.company.trim()    || null,
+          manager_id:  addUserForm.manager_id        || null,
+          invited_by:  currentUser?.id,
+          expires_at:  new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString(),
+          accepted_at: null,
+        }, { onConflict: 'email', ignoreDuplicates: false })
+        .select()
+        .single()
+      if (invErr) throw invErr
+
+      // Step 2: Also try to create a public.users stub so the user
+      // can log in immediately after signing up without needing to
+      // accept the invite manually (the auth trigger handles this,
+      // but this is a belt-and-braces pre-seed for faster onboarding)
+      await supabase.from('users').upsert({
+        email,
+        full_name:  name,
+        role:       addUserForm.role,
+        department: addUserForm.department.trim() || null,
+        company:    addUserForm.company.trim()    || null,
+        manager_id: addUserForm.manager_id        || null,
+      }, { onConflict: 'email', ignoreDuplicates: true })
+
+      // Build the invite link — points to your app's /invite route
+      const baseUrl = window.location.origin
+      const link = `${baseUrl}/invite?token=${invite.token}`
+      setInviteLink({ link, email, name })
+      showToast(`Invite created for ${name}`)
+      await loadPendingInvites()
+      await loadEmpList()
+
+    } catch (e) {
+      showToast(e.message, 'error')
+    } finally {
+      setAddUserBusy(false)
+    }
+  }
+
+  const revokeInvite = async (id) => {
+    if (!window.confirm('Revoke this invite?')) return
+    const { error } = await supabase.from('invite_tokens').delete().eq('id', id)
+    if (error) { showToast(error.message, 'error'); return }
+    showToast('Invite revoked')
+    await loadPendingInvites()
+  }
+
+  const copyInviteLink = (link) => {
+    navigator.clipboard.writeText(link).then(
+      () => showToast('Link copied to clipboard'),
+      () => showToast('Could not copy — please copy manually', 'error')
+    )
   }
 
   const loadSettings = useCallback(async () => {
@@ -588,7 +687,8 @@ export default function LeaveAdminPanel() {
     loadAuditLog()
     loadEmpList()
     loadPublicHolidays()
-  }, [loadSettings, loadLeaveTypes, loadEntitlements, loadAllowances, loadEmployees, loadRequests, loadAuditLog, loadEmpList, loadPublicHolidays, alYear])
+    loadPendingInvites()
+  }, [loadSettings, loadLeaveTypes, loadEntitlements, loadAllowances, loadEmployees, loadRequests, loadAuditLog, loadEmpList, loadPublicHolidays, loadPendingInvites, alYear])
 
   const saveLeaveType = async () => {
     if (!ltForm.name.trim()) return
@@ -855,34 +955,80 @@ export default function LeaveAdminPanel() {
                   <div style={{ fontSize: 15, fontWeight: 500 }}>Employees</div>
                   <div style={{ fontSize: 13, color: '#6b7280', marginTop: 2 }}>Manage employee details, roles, departments and managers</div>
                 </div>
+                <Btn variant="primary" size="sm" onClick={() => {
+                  setAddUserForm({ full_name:'', email:'', role:'employee', department:'', company:'', manager_id:'' })
+                  setInviteLink(null)
+                  setAddUserModal(true)
+                }}>+ Add user</Btn>
               </div>
-              <Table headers={['Name', 'Role', 'Company', 'Department', 'Manager', 'Actions']} empty="No employees found">
+
+              {/* Active employees */}
+              <Table headers={['Name', 'Email', 'Role', 'Department', 'Manager', 'Actions']} empty="No employees found">
                 {empList.map(e => {
                   const mgr = empList.find(m => m.id === e.manager_id)
                   return (
                     <TR key={e.id}>
-                      <TD><div style={{ fontWeight: 500 }}>{e.full_name}</div></TD>
+                      <TD>
+                        <div style={{ fontWeight: 500 }}>{e.full_name}</div>
+                        <div style={{ fontSize: 11, color: '#9ca3af' }}>{e.company || ''}</div>
+                      </TD>
+                      <TD style={{ color: '#6b7280', fontSize: 12 }}>{e.email || '—'}</TD>
                       <TD><Badge variant={e.role === 'admin' ? 'blue' : e.role === 'manager' ? 'green' : 'gray'} style={{ textTransform: 'capitalize' }}>{e.role}</Badge></TD>
-                      <TD style={{ color: '#6b7280' }}>{e.company || '—'}</TD>
                       <TD style={{ color: '#6b7280' }}>{e.department || '—'}</TD>
                       <TD style={{ color: '#6b7280' }}>{mgr?.full_name || '—'}</TD>
                       <TD>
-                        <Btn size="sm" onClick={() => {
-                          setEmpEditing(e.id)
-                          setEmpForm({
-                            full_name: e.full_name ?? '',
-                            role: e.role ?? 'employee',
-                            company: e.company ?? '',
-                            department: e.department ?? '',
-                            manager_id: e.manager_id ?? '',
-                          })
-                          setEmpModal(true)
-                        }}>Edit</Btn>
+                        <div style={{ display: 'flex', gap: 6 }}>
+                          <Btn size="sm" onClick={() => {
+                            setEmpEditing(e.id)
+                            setEmpForm({
+                              full_name:   e.full_name  ?? '',
+                              role:        e.role       ?? 'employee',
+                              company:     e.company    ?? '',
+                              department:  e.department ?? '',
+                              manager_id:  e.manager_id ?? '',
+                            })
+                            setEmpModal(true)
+                          }}>Edit</Btn>
+                        </div>
                       </TD>
                     </TR>
                   )
                 })}
               </Table>
+
+              {/* Pending invites */}
+              {(invitesLoading || pendingInvites.length > 0) && (
+                <div style={{ marginTop: '1.5rem' }}>
+                  <div style={{ fontSize: 13, fontWeight: 500, marginBottom: '0.75rem', display: 'flex', alignItems: 'center', gap: 8 }}>
+                    Pending invites
+                    <span style={{ background: '#FAEEDA', color: '#854F0B', fontSize: 11, padding: '1px 8px', borderRadius: 10, fontWeight: 500 }}>
+                      {pendingInvites.length}
+                    </span>
+                  </div>
+                  <Table headers={['Name', 'Email', 'Role', 'Department', 'Expires', 'Actions']} empty="No pending invites">
+                    {pendingInvites.map(inv => (
+                      <TR key={inv.id}>
+                        <TD style={{ fontWeight: 500 }}>{inv.full_name}</TD>
+                        <TD style={{ color: '#6b7280', fontSize: 12 }}>{inv.email}</TD>
+                        <TD><Badge variant={inv.role === 'admin' ? 'blue' : inv.role === 'manager' ? 'green' : 'gray'}>{inv.role}</Badge></TD>
+                        <TD style={{ color: '#6b7280' }}>{inv.department || '—'}</TD>
+                        <TD style={{ fontSize: 12, color: '#9ca3af' }}>
+                          {new Date(inv.expires_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}
+                        </TD>
+                        <TD>
+                          <div style={{ display: 'flex', gap: 6 }}>
+                            <Btn size="sm" onClick={() => {
+                              const link = `${window.location.origin}/invite?token=${inv.token}`
+                              copyInviteLink(link)
+                            }}>Copy link</Btn>
+                            <Btn size="sm" variant="danger" onClick={() => revokeInvite(inv.id)}>Revoke</Btn>
+                          </div>
+                        </TD>
+                      </TR>
+                    ))}
+                  </Table>
+                </div>
+              )}
             </div>
           )}
 
@@ -1508,6 +1654,95 @@ export default function LeaveAdminPanel() {
             {actionModal?.action === 'approve' ? 'Confirm approval' : 'Confirm rejection'}
           </Btn>
         </div>
+      </Modal>
+
+      {/* ── Add user / invite modal ── */}
+      <Modal open={addUserModal} onClose={() => { setAddUserModal(false); setInviteLink(null) }} title="Add user">
+
+        {inviteLink ? (
+          /* Success state — show invite link */
+          <div>
+            <div style={{ fontSize: 13, color: '#065f46', background: '#d1fae5', borderRadius: 8, padding: '0.75rem', marginBottom: '1rem', border: '0.5px solid #6ee7b7' }}>
+              ✓ Invite created for <strong>{inviteLink.name}</strong> ({inviteLink.email})
+            </div>
+            <div style={{ fontSize: 13, fontWeight: 500, marginBottom: '0.5rem' }}>Share this link with them:</div>
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: '1rem' }}>
+              <input
+                readOnly
+                value={inviteLink.link}
+                style={{ ...inputStyle, fontSize: 11, color: '#6b7280', flex: 1 }}
+                onClick={e => e.target.select()}
+              />
+              <Btn size="sm" variant="primary" onClick={() => copyInviteLink(inviteLink.link)}>Copy</Btn>
+            </div>
+            <div style={{ fontSize: 12, color: '#6b7280', marginBottom: '1rem', lineHeight: 1.6 }}>
+              When they sign up using this link, their account will be automatically configured
+              with the role and department you set. The link expires in 7 days.
+            </div>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', borderTop: '0.5px solid #e5e7eb', paddingTop: '1rem' }}>
+              <Btn size="sm" onClick={() => {
+                setAddUserForm({ full_name:'', email:'', role:'employee', department:'', company:'', manager_id:'' })
+                setInviteLink(null)
+              }}>Invite another</Btn>
+              <Btn size="sm" variant="primary" onClick={() => { setAddUserModal(false); setInviteLink(null) }}>Done</Btn>
+            </div>
+          </div>
+        ) : (
+          /* Form state */
+          <div>
+            <div style={{ fontSize: 12, color: '#6b7280', background: '#f9fafb', borderRadius: 8, padding: '0.6rem 0.85rem', marginBottom: '1rem', border: '0.5px solid #e5e7eb', lineHeight: 1.6 }}>
+              Fill in the details below and an invite link will be generated.
+              Send it to the employee — when they sign up, their account will be automatically configured.
+            </div>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+              <Field label="Full name *">
+                <input style={inputStyle} value={addUserForm.full_name}
+                  onChange={e => setAddUserForm(f => ({ ...f, full_name: e.target.value }))}
+                  placeholder="e.g. Jane Smith" />
+              </Field>
+              <Field label="Email address *">
+                <input style={inputStyle} type="email" value={addUserForm.email}
+                  onChange={e => setAddUserForm(f => ({ ...f, email: e.target.value }))}
+                  placeholder="jane@company.com" />
+              </Field>
+            </div>
+            <Field label="Role">
+              <select style={selectStyle} value={addUserForm.role}
+                onChange={e => setAddUserForm(f => ({ ...f, role: e.target.value }))}>
+                <option value="employee">Employee</option>
+                <option value="manager">Manager</option>
+                <option value="admin">Admin</option>
+              </select>
+            </Field>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+              <Field label="Department">
+                <input style={inputStyle} value={addUserForm.department}
+                  onChange={e => setAddUserForm(f => ({ ...f, department: e.target.value }))}
+                  placeholder="e.g. Care (Domiciliary)" />
+              </Field>
+              <Field label="Company">
+                <input style={inputStyle} value={addUserForm.company}
+                  onChange={e => setAddUserForm(f => ({ ...f, company: e.target.value }))}
+                  placeholder="e.g. Axela Care" />
+              </Field>
+            </div>
+            <Field label="Manager">
+              <select style={selectStyle} value={addUserForm.manager_id}
+                onChange={e => setAddUserForm(f => ({ ...f, manager_id: e.target.value }))}>
+                <option value="">No manager assigned</option>
+                {empList.filter(e => e.role === 'manager' || e.role === 'admin').map(e => (
+                  <option key={e.id} value={e.id}>{e.full_name}</option>
+                ))}
+              </select>
+            </Field>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', borderTop: '0.5px solid #e5e7eb', paddingTop: '1rem' }}>
+              <Btn size="sm" onClick={() => setAddUserModal(false)}>Cancel</Btn>
+              <Btn size="sm" variant="primary" onClick={createUser} disabled={addUserBusy}>
+                {addUserBusy ? 'Creating…' : 'Create invite link'}
+              </Btn>
+            </div>
+          </div>
+        )}
       </Modal>
 
       {/* ── Employee edit modal ── */}
