@@ -405,35 +405,39 @@ export default function LeaveAdminPanel() {
     setAddUserBusy(true)
     setInviteLink(null)
     try {
-      const { data: { session } } = await supabase.auth.getSession()
-      if (!session) throw new Error('Not authenticated')
+      const { data: { user: currentUser } } = await supabase.auth.getUser()
 
-      // Call the Edge Function — uses service role key server-side
-      // so public sign-ups can be disabled in Supabase Auth settings
-      const res = await fetch(
-        `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/invite-user`,
-        {
-          method:  'POST',
-          headers: {
-            'Content-Type':  'application/json',
-            'Authorization': `Bearer ${session.access_token}`,
-            'apikey':        import.meta.env.VITE_SUPABASE_ANON_KEY,
-          },
-          body: JSON.stringify({
-            email,
-            full_name:  name,
-            role:       addUserForm.role,
-            department: addUserForm.department.trim() || null,
-            company:    addUserForm.company.trim()    || null,
-            manager_id: addUserForm.manager_id        || null,
-          }),
-        }
-      )
+      // Step 1: Write the invite token row so the auth trigger
+      // can pick up the role/dept when the user signs in
+      const expiresAt = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toISOString()
+      const { error: tokenErr } = await supabase
+        .from('invite_tokens')
+        .upsert({
+          email,
+          full_name:   name,
+          role:        addUserForm.role,
+          department:  addUserForm.department.trim() || null,
+          company:     addUserForm.company.trim()    || null,
+          manager_id:  addUserForm.manager_id        || null,
+          invited_by:  currentUser?.id,
+          expires_at:  expiresAt,
+          accepted_at: null,
+        }, { onConflict: 'email' })
+      if (tokenErr) throw tokenErr
 
-      const json = await res.json()
-      if (!res.ok) throw new Error(json.error ?? 'Invite failed')
+      // Step 2: Send a magic-link sign-in email via Supabase OTP
+      // This works even when public sign-ups are disabled —
+      // the user clicks the link and is signed straight in.
+      const { error: otpErr } = await supabase.auth.signInWithOtp({
+        email,
+        options: {
+          emailRedirectTo: window.location.origin,
+          shouldCreateUser: true, // creates the auth user if they don't exist
+          data: { full_name: name, role: addUserForm.role },
+        },
+      })
+      if (otpErr) throw otpErr
 
-      // Show success — no link to copy, Supabase sends the email directly
       setInviteLink({ email, name, emailSent: true })
       showToast(`Invite email sent to ${email}`)
       await loadPendingInvites()
