@@ -1,11 +1,7 @@
-/**
- * src/hooks/useAuth.js
- * Rewritten to avoid ALL race conditions with Supabase auth lock.
- * Uses a single getSession() call with no competing listeners on mount.
- */
-
-import { useEffect, useState, useCallback } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { supabase } from '../lib/supabase'
+
+const AUTH_TIMEOUT_MS = 5000
 
 async function fetchProfile(uid) {
   // Run as authenticated user — session must be set before calling this
@@ -22,10 +18,41 @@ async function fetchProfile(uid) {
   return data ?? null
 }
 
+function withTimeout(promise, ms, label) {
+  let timeoutId
+  const timeout = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => {
+      reject(new Error(`${label} timed out after ${ms}ms`))
+    }, ms)
+  })
+
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timeoutId))
+}
+
 export function useAuth() {
   const [user,    setUser]    = useState(undefined) // undefined = not yet checked
   const [profile, setProfile] = useState(null)
   const [loading, setLoading] = useState(true)
+  const profileRequestRef = useRef(0)
+
+  const loadProfile = useCallback(async (uid) => {
+    const requestId = ++profileRequestRef.current
+
+    try {
+      const prof = await withTimeout(fetchProfile(uid), AUTH_TIMEOUT_MS, 'fetchProfile')
+      if (requestId !== profileRequestRef.current) return
+
+      setProfile(prof)
+    } catch (err) {
+      if (requestId !== profileRequestRef.current) return
+      console.error('[useAuth] fetchProfile failed:', err.message)
+      setProfile(null)
+    } finally {
+      if (requestId === profileRequestRef.current) {
+        setLoading(false)
+      }
+    }
+  }, [])
 
   useEffect(() => {
     let active = true
@@ -33,7 +60,11 @@ export function useAuth() {
     async function init() {
       try {
         // Step 1: Get session — reads from localStorage, no network needed
-        const { data: { session }, error } = await supabase.auth.getSession()
+        const { data: { session }, error } = await withTimeout(
+          supabase.auth.getSession(),
+          AUTH_TIMEOUT_MS,
+          'getSession'
+        )
         if (error) throw error
         if (!active) return
 
@@ -44,18 +75,13 @@ export function useAuth() {
         }
 
         setUser(session.user)
-
-        // Step 2: Fetch profile row
-        const prof = await fetchProfile(session.user.id)
-        if (!active) return
-        setProfile(prof)
-        setLoading(false)
+        setTimeout(() => {
+          if (active) loadProfile(session.user.id)
+        }, 0)
 
       } catch (err) {
         console.error('useAuth init error:', err.message)
         if (active) {
-          setUser(null)
-          setProfile(null)
           setLoading(false)
         }
       }
@@ -70,6 +96,7 @@ export function useAuth() {
         if (!active) return
 
         if (event === 'SIGNED_OUT' || !session?.user) {
+          profileRequestRef.current++
           setUser(null)
           setProfile(null)
           setLoading(false)
@@ -78,22 +105,22 @@ export function useAuth() {
 
         if (event === 'SIGNED_IN' || event === 'TOKEN_REFRESHED') {
           setUser(session.user)
-          const prof = await fetchProfile(session.user.id)
-          if (active) {
-            setProfile(prof)
-            setLoading(false)
-          }
+          setTimeout(() => {
+            if (active) loadProfile(session.user.id)
+          }, 0)
         }
       }
     )
 
     return () => {
       active = false
+      profileRequestRef.current++
       subscription.unsubscribe()
     }
-  }, [])
+  }, [loadProfile])
 
   const signOut = useCallback(async () => {
+    profileRequestRef.current++
     setUser(null)
     setProfile(null)
     setLoading(false)
