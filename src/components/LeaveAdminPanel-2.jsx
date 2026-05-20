@@ -323,13 +323,21 @@ export default function LeaveAdminPanel() {
     try {
       const { data: { user } } = await supabase.auth.getUser()
 
-      // Update the request
+      // Map action to new status
+      const newStatus =
+        action === 'approve'              ? 'approved'  :
+        action === 'reject'               ? 'rejected'  :
+        action === 'approve_cancellation' ? 'cancelled' :
+        action === 'reject_cancellation'  ? 'approved'  : null
+
+      if (!newStatus) throw new Error('Unknown action')
+
       const { error } = await supabase
         .from('leave_requests')
         .update({
-          status: action === 'approve' ? 'approved' : 'rejected',
+          status:      newStatus,
           approver_id: user?.id,
-          admin_note: actionNote.trim() || null,
+          admin_note:  actionNote.trim() || null,
         })
         .eq('id', id)
       if (error) throw error
@@ -337,14 +345,21 @@ export default function LeaveAdminPanel() {
       // Write audit log entry
       const performer = empList.find(e => e.id === user?.id)
       await supabase.from('leave_audit_log').insert({
-        leave_request_id: id,
-        action: action === 'approve' ? 'approved' : 'rejected',
-        performed_by: user?.id,
+        leave_request_id:  id,
+        action:            action,
+        performed_by:      user?.id,
         performed_by_name: performer?.full_name ?? user?.email ?? 'Unknown',
-        note: actionNote.trim() || null,
+        note:              actionNote.trim() || null,
       })
 
-      showToast(action === 'approve' ? 'Request approved' : 'Request rejected')
+      const toastMsg = {
+        approve:              'Request approved',
+        reject:               'Request rejected',
+        approve_cancellation: 'Cancellation approved — days restored',
+        reject_cancellation:  'Cancellation rejected — leave reinstated',
+      }[action]
+
+      showToast(toastMsg)
       setActionModal(null)
       setActionNote('')
       await Promise.all([loadRequests(), loadAuditLog()])
@@ -927,15 +942,26 @@ export default function LeaveAdminPanel() {
                         : <span style={{ color: '#d1d5db' }}>—</span>}
                     </TD>
                     <TD>
-                      <Badge variant={r.status === 'approved' ? 'green' : r.status === 'rejected' ? 'red' : 'amber'}>
-                        {r.status}
+                      <Badge variant={
+                        r.status === 'approved'             ? 'green' :
+                        r.status === 'rejected'             ? 'red'   :
+                        r.status === 'cancelled'            ? 'gray'  :
+                        r.status === 'cancellation_pending' ? 'amber' : 'amber'
+                      }>
+                        {r.status === 'cancellation_pending' ? 'Cancellation requested' : r.status}
                       </Badge>
                     </TD>
                     <TD>
                       {r.status === 'pending' && (
                         <div style={{ display: 'flex', gap: 6 }}>
                           <Btn size="sm" variant="primary" onClick={() => openAction(r.id, 'approve')}>Approve</Btn>
-                          <Btn size="sm" variant="danger" onClick={() => openAction(r.id, 'reject')}>Reject</Btn>
+                          <Btn size="sm" variant="danger"  onClick={() => openAction(r.id, 'reject')}>Reject</Btn>
+                        </div>
+                      )}
+                      {r.status === 'cancellation_pending' && (
+                        <div style={{ display: 'flex', gap: 6 }}>
+                          <Btn size="sm" variant="primary" onClick={() => openAction(r.id, 'approve_cancellation')}>Approve cancellation</Btn>
+                          <Btn size="sm" variant="danger"  onClick={() => openAction(r.id, 'reject_cancellation')}>Reject cancellation</Btn>
                         </div>
                       )}
                     </TD>
@@ -1628,27 +1654,48 @@ export default function LeaveAdminPanel() {
         </div>
       </Modal>
 
-      {/* ── Approve / Reject modal ── */}
-      <Modal open={!!actionModal} onClose={() => setActionModal(null)} title={actionModal?.action === 'approve' ? 'Approve request' : 'Reject request'}>
+      {/* ── Approve / Reject / Cancellation modal ── */}
+      <Modal open={!!actionModal} onClose={() => setActionModal(null)} title={
+        actionModal?.action === 'approve'              ? 'Approve request' :
+        actionModal?.action === 'reject'               ? 'Reject request' :
+        actionModal?.action === 'approve_cancellation' ? 'Approve cancellation' :
+        'Reject cancellation'
+      }>
         <p style={{ fontSize: 13, color: '#6b7280', marginBottom: '1rem' }}>
-          {actionModal?.action === 'approve'
-            ? 'Optionally leave a note for the employee before approving.'
-            : 'Please provide a reason for rejecting this request.'}
+          {actionModal?.action === 'approve'              && 'Optionally leave a note for the employee before approving.'}
+          {actionModal?.action === 'reject'               && 'Please provide a reason for rejecting this request.'}
+          {actionModal?.action === 'approve_cancellation' && 'The leave will be cancelled and the days returned to the employee\'s allowance.'}
+          {actionModal?.action === 'reject_cancellation'  && 'The leave will remain approved. Optionally explain why the cancellation was declined.'}
         </p>
-        <Field label={actionModal?.action === 'approve' ? 'Note for employee (optional)' : 'Reason for rejection'}>
+        <Field label={
+          actionModal?.action === 'approve'              ? 'Note for employee (optional)' :
+          actionModal?.action === 'reject'               ? 'Reason for rejection' :
+          actionModal?.action === 'approve_cancellation' ? 'Note for employee (optional)' :
+          'Reason for declining cancellation'
+        }>
           <textarea
             value={actionNote}
             onChange={e => setActionNote(e.target.value)}
             rows={3}
-            placeholder={actionModal?.action === 'approve' ? 'e.g. Approved, enjoy your break!' : 'e.g. Insufficient cover during this period'}
+            placeholder={
+              actionModal?.action === 'approve'              ? 'e.g. Approved, enjoy your break!' :
+              actionModal?.action === 'reject'               ? 'e.g. Insufficient cover during this period' :
+              actionModal?.action === 'approve_cancellation' ? 'e.g. Cancellation approved, days returned to your balance' :
+              'e.g. Cover has already been arranged for this period'
+            }
             style={{ ...inputStyle, fontFamily: 'inherit', resize: 'vertical' }}
           />
         </Field>
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', borderTop: '0.5px solid #e5e7eb', paddingTop: '1rem' }}>
           <Btn size="sm" onClick={() => setActionModal(null)}>Cancel</Btn>
-          <Btn size="sm" variant={actionModal?.action === 'approve' ? 'primary' : 'danger'} onClick={confirmAction}
+          <Btn size="sm"
+            variant={actionModal?.action === 'approve' || actionModal?.action === 'approve_cancellation' ? 'primary' : 'danger'}
+            onClick={confirmAction}
             disabled={actionModal?.action === 'reject' && !actionNote.trim()}>
-            {actionModal?.action === 'approve' ? 'Confirm approval' : 'Confirm rejection'}
+            {actionModal?.action === 'approve'              && 'Confirm approval'}
+            {actionModal?.action === 'reject'               && 'Confirm rejection'}
+            {actionModal?.action === 'approve_cancellation' && 'Approve cancellation'}
+            {actionModal?.action === 'reject_cancellation'  && 'Reject cancellation'}
           </Btn>
         </div>
       </Modal>

@@ -39,10 +39,11 @@ const fmtDate = s => s ? new Date(s).toLocaleDateString(undefined, { day:'numeri
 const fmtShort = s => s ? new Date(s + 'T00:00:00').toLocaleDateString(undefined, { day:'numeric', month:'short' }) : '—'
 
 const STATUS_VARIANTS = {
-  pending:   { variant:'amber', label:'Pending' },
-  approved:  { variant:'green', label:'Approved' },
-  rejected:  { variant:'red',   label:'Rejected' },
-  cancelled: { variant:'gray',  label:'Cancelled' },
+  pending:              { variant:'amber', label:'Pending' },
+  approved:             { variant:'green', label:'Approved' },
+  rejected:             { variant:'red',   label:'Rejected' },
+  cancelled:            { variant:'gray',  label:'Cancelled' },
+  cancellation_pending: { variant:'amber', label:'Cancellation requested' },
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -209,6 +210,16 @@ export default function LeaveUserPanel({ userId, fullName }) {
     await Promise.all([loadRequests(), loadBalances()])
   }
 
+  const requestCancellation = async (id) => {
+    if (!window.confirm('Request cancellation of this approved leave? Your manager will need to approve the cancellation.')) return
+    const { error } = await supabase
+      .from('leave_requests').update({ status:'cancellation_pending' })
+      .eq('id', id).eq('user_id', userId).eq('status', 'approved')
+    if (error) { showToast(error.message, 'error'); return }
+    showToast('Cancellation request sent to your manager')
+    await Promise.all([loadRequests(), loadBalances()])
+  }
+
   const downloadICS = (r) => {
     const pad  = n => String(n).padStart(2, '0')
     const toICSDate = dateStr => {
@@ -359,18 +370,26 @@ export default function LeaveUserPanel({ userId, fullName }) {
                     : <span style={{ color:'#d1d5db' }}>—</span>}
                 </TD>
                 <TD>
-                  <div style={{ display:'flex', gap:6, alignItems:'center' }}>
+                  <div style={{ display:'flex', gap:6, alignItems:'center', flexWrap:'wrap' }}>
                     {r.status === 'pending' && (
                       <Btn size="sm" variant="danger" onClick={() => cancelRequest(r.id)}>Cancel</Btn>
+                    )}
+                    {r.status === 'approved' && (
+                      <Btn size="sm" variant="danger" onClick={() => requestCancellation(r.id)}>Request cancellation</Btn>
+                    )}
+                    {r.status === 'cancellation_pending' && (
+                      <span style={{ fontSize:11, color:'#854F0B', background:'#FAEEDA', padding:'2px 8px', borderRadius:8 }}>
+                        Awaiting manager
+                      </span>
                     )}
                     {(r.status === 'approved' || r.status === 'pending') && !r.hours_requested && (
                       <Btn size="sm" onClick={() => downloadICS(r)} title="Add to calendar">
                         📅 .ics
                       </Btn>
                     )}
-                    {r.status === 'cancelled' || r.status === 'rejected' ? (
+                    {(r.status === 'cancelled' || r.status === 'rejected') && (
                       <span style={{ color:'#d1d5db' }}>—</span>
-                    ) : null}
+                    )}
                   </div>
                 </TD>
               </TR>
