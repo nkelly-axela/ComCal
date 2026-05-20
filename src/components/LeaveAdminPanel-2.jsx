@@ -90,12 +90,13 @@ const Modal = ({ open, onClose, title, children }) => {
   if (!open) return null
   return (
     <div onClick={onClose} style={{
-      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.35)',
+      position: 'absolute', inset: 0, background: 'rgba(0,0,0,0.35)',
       display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 50,
+      borderRadius: 12,
     }}>
       <div onClick={e => e.stopPropagation()} style={{
         background: '#fff', borderRadius: 12, border: '0.5px solid #e5e7eb',
-        padding: '1.5rem', width: 400, maxWidth: '90vw',
+        padding: '1.5rem', width: 400, maxWidth: '90%',
         boxShadow: '0 8px 32px rgba(0,0,0,0.12)',
       }}>
         <h3 style={{ fontSize: 15, fontWeight: 500, marginBottom: '1rem' }}>{title}</h3>
@@ -1271,15 +1272,17 @@ export default function LeaveAdminPanel() {
               <div style={{ border:'0.5px solid #e5e7eb', borderRadius:10, padding:'1.25rem', marginBottom:'1.25rem' }}>
                 <div style={{ fontSize:13, fontWeight:500, marginBottom:4 }}>Run year-end rollover</div>
                 <div style={{ fontSize:12, color:'#6b7280', marginBottom:'1rem' }}>
-                  Processes {currentYear} → {currentYear+1} rollover for all employees.
-                  Creates new allowance rows for the carried-over days, capped at your policy above.
+                  Processes the current holiday year rollover for all employees based on your
+                  holiday year start date ({holidayYearStart || '01-01'}).
+                  Creates new allowance rows for carried-over days, capped at your policy above.
                   Safe to re-run — existing rollover rows are skipped.
                 </div>
                 <div style={{ fontSize:12, color:'#854F0B', background:'#FAEEDA', borderRadius:8, padding:'0.6rem 0.85rem', marginBottom:'1rem', border:'0.5px solid #fcd34d' }}>
-                  ⚠ Run this after the last day of your holiday year, before seeding {currentYear+1} allowances.
+                  ⚠ Run this on or after the last day of your holiday year, before seeding the new year's allowances.
+                  Rolled-over days will expire {rolloverExpiryMonths} month{+rolloverExpiryMonths!==1?'s':''} after the new holiday year starts.
                 </div>
                 <Btn variant="primary" size="sm" onClick={previewRollover} disabled={rolloverRunning || !rolloverEnabled}>
-                  {rolloverRunning ? 'Processing…' : `Process ${currentYear} → ${currentYear+1} rollover`}
+                  {rolloverRunning ? 'Processing…' : `Process year-end rollover`}
                 </Btn>
               </div>
 

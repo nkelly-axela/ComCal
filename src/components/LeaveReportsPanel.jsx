@@ -173,7 +173,7 @@ export default function LeaveReportsPanel() {
 
       {toast && (
         <div style={{
-          position: 'fixed', top: 16, right: 16, zIndex: 100,
+          position: 'absolute', top: 12, right: 12, zIndex: 100,
           background: toast.type === 'error' ? '#fee2e2' : '#d1fae5',
           color: toast.type === 'error' ? '#991b1b' : '#065f46',
           padding: '0.6rem 1rem', borderRadius: 8, fontSize: 13,
