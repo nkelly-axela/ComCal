@@ -233,10 +233,14 @@ export default function LeaveAdminPanel() {
   const [seedLoading, setSeedLoading] = useState(false)
   const [toast, setToast] = useState(null)
 
-  // Holiday year state
+  // Holiday year state — from get_holiday_year_dates()
   const [holidayYearLabel, setHolidayYearLabel] = useState(currentYear)
-  const [holidayYearStart, setHolidayYearStartDate] = useState(null)
-  const [holidayYearEnd,   setHolidayYearEndDate]   = useState(null)
+  const [holidayYearStartDate, setHolidayYearStartDate] = useState(null)
+  const [holidayYearEndDate,   setHolidayYearEndDate]   = useState(null)
+
+  // Holiday year setting — MM-DD string from company_settings
+  const [holidayYearStart, setHolidayYearStart] = useState('01-01')
+  const [holidayYearSaving, setHolidayYearSaving] = useState(false)
 
   const loadHolidayYear = useCallback(async () => {
     try {
@@ -245,7 +249,7 @@ export default function LeaveAdminPanel() {
         setHolidayYearLabel(data[0].year_label)
         setHolidayYearStartDate(data[0].year_start)
         setHolidayYearEndDate(data[0].year_end)
-        setAlYear(data[0].year_label) // align allowances tab to current holiday year
+        setAlYear(data[0].year_label)
       }
     } catch { /* silently ignore */ }
   }, [])
@@ -897,9 +901,9 @@ export default function LeaveAdminPanel() {
           <div style={{ marginTop: 'auto', padding: '1rem', borderTop: '0.5px solid #e5e7eb' }}>
             <div style={{ fontSize: 11, color: '#9ca3af' }}>Holiday year</div>
             <div style={{ fontSize: 20, fontWeight: 500 }}>{holidayYearLabel}</div>
-            {holidayYearStart && holidayYearEnd && (
+            {holidayYearStartDate && holidayYearEndDate && (
               <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 2 }}>
-                {new Date(holidayYearStart).toLocaleDateString('en-GB', { day:'numeric', month:'short' })} – {new Date(holidayYearEnd).toLocaleDateString('en-GB', { day:'numeric', month:'short', year:'numeric' })}
+                {new Date(holidayYearStartDate).toLocaleDateString('en-GB', { day:'numeric', month:'short' })} – {new Date(holidayYearEndDate).toLocaleDateString('en-GB', { day:'numeric', month:'short', year:'numeric' })}
               </div>
             )}
           </div>
