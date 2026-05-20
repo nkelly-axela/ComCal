@@ -73,14 +73,31 @@ export default function LeaveUserPanel({ userId, fullName }) {
     setTimeout(() => setToast(null), 3500)
   }
 
-  // ── Loaders ───────────────────────────────────────────────────
+  // ── Load holiday year label ───────────────────────────────────
+  const [holidayYear,      setHolidayYear]      = useState(null)
+  const [holidayYearStart, setHolidayYearStart] = useState(null)
+  const [holidayYearEnd,   setHolidayYearEnd]   = useState(null)
+
+  const loadHolidayYear = useCallback(async () => {
+    try {
+      const { data } = await supabase.rpc('get_holiday_year_dates')
+      if (data?.[0]) {
+        setHolidayYear(data[0].year_label)
+        setHolidayYearStart(data[0].year_start)
+        setHolidayYearEnd(data[0].year_end)
+      }
+    } catch {
+      setHolidayYear(new Date().getFullYear())
+    }
+  }, [])
   const loadBalances = useCallback(async () => {
+    const yr = holidayYear ?? currentYear
     const { data, error } = await supabase
       .from('v_leave_balances').select('*')
-      .eq('user_id', userId).eq('year', currentYear)
+      .eq('user_id', userId).eq('year', yr)
     if (error) showToast(error.message, 'error')
     else setBalances(data ?? [])
-  }, [userId, currentYear])
+  }, [userId, holidayYear, currentYear])
 
   const loadRequests = useCallback(async () => {
     const { data, error } = await supabase
@@ -102,11 +119,11 @@ export default function LeaveUserPanel({ userId, fullName }) {
 
   useEffect(() => {
     let cancelled = false
-    Promise.all([loadBalances(), loadRequests(), loadLeaveTypes()]).finally(() => {
+    Promise.all([loadHolidayYear(), loadBalances(), loadRequests(), loadLeaveTypes()]).finally(() => {
       if (!cancelled) setLoading(false)
     })
     return () => { cancelled = true }
-  }, [loadBalances, loadRequests, loadLeaveTypes])
+  }, [loadHolidayYear, loadBalances, loadRequests, loadLeaveTypes])
 
   // ── Conflict detection — runs when dates change in modal ──────
   const checkConflicts = useCallback(async (start, end) => {
@@ -320,7 +337,11 @@ export default function LeaveUserPanel({ userId, fullName }) {
         <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', marginBottom:'1.5rem' }}>
           <div>
             <div style={{ fontSize:16, fontWeight:500 }}>Hi, {fullName?.split(' ')[0]??'there'}</div>
-            <div style={{ fontSize:13, color:'#6b7280', marginTop:2 }}>Your leave for {currentYear}</div>
+            <div style={{ fontSize:13, color:'#6b7280', marginTop:2 }}>
+              {holidayYearStart && holidayYearEnd
+                ? `Holiday year: ${new Date(holidayYearStart).toLocaleDateString('en-GB', { day:'numeric', month:'short', year:'numeric' })} – ${new Date(holidayYearEnd).toLocaleDateString('en-GB', { day:'numeric', month:'short', year:'numeric' })}`
+                : `Your leave for ${currentYear}`}
+            </div>
           </div>
           <Btn variant="primary" size="sm" onClick={() => {
             setForm({ typeId:leaveTypes[0]?.id??'', start:'', end:'', reason:'', isHourly:false, hours:'1', hourDate:'' })
@@ -334,7 +355,7 @@ export default function LeaveUserPanel({ userId, fullName }) {
           {loading
             ? <div style={{ color:'#9ca3af', fontSize:13 }}>Loading balances…</div>
             : balances.length === 0
-              ? <div style={{ color:'#9ca3af', fontSize:13 }}>No allowances seeded for {currentYear} yet. Ask an admin to run the seed.</div>
+              ? <div style={{ color:'#9ca3af', fontSize:13 }}>No allowances seeded for this holiday year yet. Ask an admin to run the seed.</div>
               : balances.map(b => <BalanceCard key={`${b.leave_type_id}-${b.year}`} b={b} />)}
         </div>
 
@@ -488,6 +509,9 @@ export default function LeaveUserPanel({ userId, fullName }) {
 function BalanceCard({ b }) {
   const pct  = b.total_days > 0 ? Math.round((b.used_days/b.total_days)*100) : 0
   const fill = pct>80?'#E24B4A':pct>50?'#EF9F27':'#1D9E75'
+  const yearLabel = b.year_start && b.year_end
+    ? `${new Date(b.year_start).toLocaleDateString('en-GB',{month:'short',year:'numeric'})} – ${new Date(b.year_end).toLocaleDateString('en-GB',{month:'short',year:'numeric'})}`
+    : `${b.year}`
   return (
     <div style={{ background:'#f9fafb', borderRadius:10, border:'0.5px solid #e5e7eb', padding:'1rem' }}>
       <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:8 }}>
@@ -500,7 +524,7 @@ function BalanceCard({ b }) {
       <div style={{ height:5, background:'#e5e7eb', borderRadius:3, overflow:'hidden', marginTop:10 }}>
         <div style={{ width:`${pct}%`, height:'100%', background:fill }} />
       </div>
-      <div style={{ fontSize:11, color:'#9ca3af', marginTop:6 }}>{b.used_days} used · {b.year}</div>
+      <div style={{ fontSize:11, color:'#9ca3af', marginTop:6 }}>{b.used_days} used · {yearLabel}</div>
     </div>
   )
 }

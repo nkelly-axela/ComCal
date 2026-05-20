@@ -203,7 +203,7 @@ export default function LeaveAdminPanel() {
   const [entForm, setEntForm] = useState({ typeId: '', role: '', days: '' })
 
   const [allowances, setAllowances] = useState([])
-  const [alYear, setAlYear] = useState(currentYear)
+  const [alYear, setAlYear] = useState(currentYear) // updated to holidayYearLabel after load
   const [alModal, setAlModal] = useState(false)
   const [alEditing, setAlEditing] = useState(null)
   const [alForm, setAlForm] = useState({ userId: '', typeId: '', year: currentYear, total: '', note: '' })
@@ -233,8 +233,22 @@ export default function LeaveAdminPanel() {
   const [seedLoading, setSeedLoading] = useState(false)
   const [toast, setToast] = useState(null)
 
-  const [holidayYearStart, setHolidayYearStart] = useState('01-01')
-  const [holidayYearSaving, setHolidayYearSaving] = useState(false)
+  // Holiday year state
+  const [holidayYearLabel, setHolidayYearLabel] = useState(currentYear)
+  const [holidayYearStart, setHolidayYearStartDate] = useState(null)
+  const [holidayYearEnd,   setHolidayYearEndDate]   = useState(null)
+
+  const loadHolidayYear = useCallback(async () => {
+    try {
+      const { data } = await supabase.rpc('get_holiday_year_dates')
+      if (data?.[0]) {
+        setHolidayYearLabel(data[0].year_label)
+        setHolidayYearStartDate(data[0].year_start)
+        setHolidayYearEndDate(data[0].year_end)
+        setAlYear(data[0].year_label) // align allowances tab to current holiday year
+      }
+    } catch { /* silently ignore */ }
+  }, [])
 
   // Rollover settings
   const [rolloverEnabled,      setRolloverEnabled]      = useState(true)
@@ -532,7 +546,7 @@ export default function LeaveAdminPanel() {
     try {
       const { data: { user } } = await supabase.auth.getUser()
       const { data, error } = await supabase.rpc('process_year_end_rollover', {
-        p_from_year:    currentYear,
+        p_from_year:    holidayYearLabel,
         p_performed_by: user?.id,
       })
       if (error) throw error
@@ -692,6 +706,7 @@ export default function LeaveAdminPanel() {
 
   useEffect(() => {
     loadSettings()
+    loadHolidayYear()
     loadLeaveTypes()
     loadEntitlements()
     loadAllowances(alYear)
@@ -701,7 +716,7 @@ export default function LeaveAdminPanel() {
     loadEmpList()
     loadPublicHolidays()
     loadPendingInvites()
-  }, [loadSettings, loadLeaveTypes, loadEntitlements, loadAllowances, loadEmployees, loadRequests, loadAuditLog, loadEmpList, loadPublicHolidays, loadPendingInvites, alYear])
+  }, [loadSettings, loadHolidayYear, loadLeaveTypes, loadEntitlements, loadAllowances, loadEmployees, loadRequests, loadAuditLog, loadEmpList, loadPublicHolidays, loadPendingInvites, alYear])
 
   const saveLeaveType = async () => {
     if (!ltForm.name.trim()) return
@@ -812,13 +827,13 @@ export default function LeaveAdminPanel() {
     try {
       const { data: { user } } = await supabase.auth.getUser()
       const { data, error } = await supabase.rpc('seed_annual_allowances', {
-        p_year: currentYear,
+        p_year:         holidayYearLabel,
         p_performed_by: user?.id,
       })
       if (error) throw error
       await loadAllowances(alYear)
       const created = Array.isArray(data) ? data.filter(r => !r.skipped).length : 0
-      showToast(`Seeded ${created} allowances`)
+      showToast(`Seeded ${created} allowances for holiday year ${holidayYearLabel}`)
     } catch (e) {
       showToast(e.message, 'error')
     } finally {
@@ -880,8 +895,13 @@ export default function LeaveAdminPanel() {
             </div>
           ))}
           <div style={{ marginTop: 'auto', padding: '1rem', borderTop: '0.5px solid #e5e7eb' }}>
-            <div style={{ fontSize: 11, color: '#9ca3af' }}>Current year</div>
-            <div style={{ fontSize: 20, fontWeight: 500 }}>{currentYear}</div>
+            <div style={{ fontSize: 11, color: '#9ca3af' }}>Holiday year</div>
+            <div style={{ fontSize: 20, fontWeight: 500 }}>{holidayYearLabel}</div>
+            {holidayYearStart && holidayYearEnd && (
+              <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 2 }}>
+                {new Date(holidayYearStart).toLocaleDateString('en-GB', { day:'numeric', month:'short' })} – {new Date(holidayYearEnd).toLocaleDateString('en-GB', { day:'numeric', month:'short', year:'numeric' })}
+              </div>
+            )}
           </div>
         </nav>
 
@@ -1327,7 +1347,7 @@ export default function LeaveAdminPanel() {
                   <div style={{ fontSize: 13, color: '#6b7280', marginTop: 2 }}>Leave system at a glance</div>
                 </div>
                 <Btn variant="primary" size="sm" onClick={seedAllowances} disabled={seedLoading}>
-                  {seedLoading ? 'Seeding…' : `Seed ${currentYear} allowances`}
+                  {seedLoading ? 'Seeding…' : `Seed ${holidayYearLabel} allowances`}
                 </Btn>
               </div>
 
@@ -1531,7 +1551,7 @@ export default function LeaveAdminPanel() {
                 </div>
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
                   <select value={alYear} onChange={e => setAlYear(+e.target.value)} style={{ ...selectStyle, width: 'auto', padding: '0.4rem 0.65rem' }}>
-                    {[currentYear - 1, currentYear, currentYear + 1].map(y => <option key={y} value={y}>{y}</option>)}
+                    {[holidayYearLabel - 1, holidayYearLabel, holidayYearLabel + 1].map(y => <option key={y} value={y}>Holiday year {y}</option>)}
                   </select>
                   <Btn variant="primary" size="sm" onClick={() => {
                     setAlEditing(null)
@@ -1541,7 +1561,7 @@ export default function LeaveAdminPanel() {
                 </div>
               </div>
 
-              <Table headers={['Employee', 'Leave type', 'Total', 'Used', 'Remaining', 'Actions']} empty={`No allowances seeded for ${alYear}. Run seed_annual_allowances() in Supabase.`}>
+              <Table headers={['Employee', 'Leave type', 'Total', 'Used', 'Remaining', 'Actions']} empty={`No allowances seeded for holiday year ${alYear}. Use Admin → Overview → Seed allowances.`}>
                 {allowances.filter(a => a.year === alYear).map(a => (
                   <TR key={a.id}>
                     <TD>
