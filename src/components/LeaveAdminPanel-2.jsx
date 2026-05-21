@@ -459,6 +459,8 @@ export default function LeaveAdminPanel() {
       showToast(e.message, 'error')
     }
   }
+
+  const saveEmployee = async () => {
     if (!empForm.full_name.trim()) { showToast('Name is required', 'error'); return }
     try {
       const payload = {
