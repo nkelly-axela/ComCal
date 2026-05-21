@@ -214,8 +214,12 @@ export default function LeaveAdminPanel() {
   const [actionModal, setActionModal] = useState(null)
   const [actionNote, setActionNote] = useState('')
 
-  const [auditLog, setAuditLog] = useState([])
+  const [auditLog,     setAuditLog]     = useState([])
   const [auditLoading, setAuditLoading] = useState(false)
+  const [auditPage,    setAuditPage]    = useState(1)
+  const [auditTotal,   setAuditTotal]   = useState(0)
+  const [auditFilter,  setAuditFilter]  = useState('all')
+  const AUDIT_PAGE_SIZE = 50
 
   const [empList, setEmpList] = useState([])
   const [empModal, setEmpModal] = useState(false)
@@ -296,10 +300,13 @@ export default function LeaveAdminPanel() {
     }
   }, [])
 
-  const loadAuditLog = useCallback(async () => {
+  const loadAuditLog = useCallback(async (page = 1, filter = 'all') => {
     setAuditLoading(true)
     try {
-      const { data, error } = await supabase
+      const from = (page - 1) * AUDIT_PAGE_SIZE
+      const to   = from + AUDIT_PAGE_SIZE - 1
+
+      let query = supabase
         .from('leave_audit_log')
         .select(`
           id, action, note, created_at, performed_by_name,
@@ -309,17 +316,22 @@ export default function LeaveAdminPanel() {
             user:users!leave_requests_user_id_fkey ( full_name ),
             leave_types ( name, color )
           )
-        `)
+        `, { count: 'exact' })
         .order('created_at', { ascending: false })
-        .limit(200)
+        .range(from, to)
+
+      if (filter !== 'all') query = query.eq('action', filter)
+
+      const { data, error, count } = await query
       if (error) throw error
       setAuditLog(data ?? [])
+      setAuditTotal(count ?? 0)
     } catch (e) {
       showToast(e.message, 'error')
     } finally {
       setAuditLoading(false)
     }
-  }, [])
+  }, [AUDIT_PAGE_SIZE])
 
   const loadEmpList = useCallback(async () => {
     try {
@@ -390,7 +402,63 @@ export default function LeaveAdminPanel() {
     }
   }
 
-  const saveEmployee = async () => {
+  const exportAuditCSV = async () => {
+    try {
+      // Fetch all records for export (no pagination)
+      let query = supabase
+        .from('leave_audit_log')
+        .select(`
+          id, action, note, created_at, performed_by_name,
+          leave_requests (
+            start_date, end_date, days_requested, hours_requested,
+            user:users!leave_requests_user_id_fkey ( full_name ),
+            leave_types ( name )
+          )
+        `)
+        .order('created_at', { ascending: false })
+
+      if (auditFilter !== 'all') query = query.eq('action', auditFilter)
+
+      const { data, error } = await query
+      if (error) throw error
+
+      const rows = (data ?? []).map(a => ({
+        'Date':        new Date(a.created_at).toLocaleDateString('en-GB'),
+        'Time':        new Date(a.created_at).toLocaleTimeString('en-GB', { hour:'2-digit', minute:'2-digit' }),
+        'Action':      a.action ?? '',
+        'Employee':    a.leave_requests?.user?.full_name ?? '',
+        'Leave type':  a.leave_requests?.leave_types?.name ?? '',
+        'Start date':  a.leave_requests?.start_date ?? '',
+        'End date':    a.leave_requests?.end_date ?? '',
+        'Duration':    a.leave_requests?.hours_requested
+                         ? `${a.leave_requests.hours_requested}h`
+                         : a.leave_requests?.days_requested
+                         ? `${a.leave_requests.days_requested} days`
+                         : '',
+        'Actioned by': a.performed_by_name ?? '',
+        'Note':        a.note ?? '',
+      }))
+
+      const headers = Object.keys(rows[0] ?? {})
+      const csv = [
+        headers.join(','),
+        ...rows.map(r => headers.map(h => `"${String(r[h]).replace(/"/g, '""')}"`).join(','))
+      ].join('\n')
+
+      const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' })
+      const url  = URL.createObjectURL(blob)
+      const a    = document.createElement('a')
+      a.href     = url
+      a.download = `audit-log-${new Date().toISOString().slice(0,10)}.csv`
+      document.body.appendChild(a)
+      a.click()
+      document.body.removeChild(a)
+      URL.revokeObjectURL(url)
+      showToast(`Exported ${rows.length} audit entries`)
+    } catch (e) {
+      showToast(e.message, 'error')
+    }
+  }
     if (!empForm.full_name.trim()) { showToast('Name is required', 'error'); return }
     try {
       const payload = {
@@ -729,6 +797,11 @@ export default function LeaveAdminPanel() {
   useEffect(() => {
     loadAllowances(alYear)
   }, [alYear, loadAllowances])
+
+  // Reload audit log when page or filter changes
+  useEffect(() => {
+    loadAuditLog(auditPage, auditFilter)
+  }, [auditPage, auditFilter, loadAuditLog])
 
   const saveLeaveType = async () => {
     if (!ltForm.name.trim()) return
@@ -1090,51 +1163,109 @@ export default function LeaveAdminPanel() {
 
           {tab === 'audit' && (
             <div>
-              <div style={{ marginBottom: '1.25rem' }}>
-                <div style={{ fontSize: 15, fontWeight: 500 }}>Audit log</div>
-                <div style={{ fontSize: 13, color: '#6b7280', marginTop: 2 }}>Full history of who approved or rejected each leave request</div>
+              <div style={{ display:'flex', alignItems:'flex-start', justifyContent:'space-between', marginBottom:'1.25rem' }}>
+                <div>
+                  <div style={{ fontSize: 15, fontWeight: 500 }}>Audit log</div>
+                  <div style={{ fontSize: 13, color: '#6b7280', marginTop: 2 }}>
+                    Full history of who approved or rejected each leave request
+                    {auditTotal > 0 && <span style={{ marginLeft:8, color:'#9ca3af' }}>({auditTotal} entries)</span>}
+                  </div>
+                </div>
+                <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+                  <select
+                    value={auditFilter}
+                    onChange={e => { setAuditFilter(e.target.value); setAuditPage(1) }}
+                    style={{ fontSize:12, padding:'0.4rem 0.65rem', border:'0.5px solid #e5e7eb', borderRadius:8, fontFamily:'inherit' }}
+                  >
+                    <option value="all">All actions</option>
+                    <option value="approved">Approved</option>
+                    <option value="rejected">Rejected</option>
+                    <option value="seeded">Seeded</option>
+                    <option value="pro_rata_seeded">Pro-rata seeded</option>
+                    <option value="adjusted">Adjusted</option>
+                    <option value="rollover">Rollover</option>
+                    <option value="expired">Expired</option>
+                  </select>
+                  <Btn size="sm" onClick={exportAuditCSV}>⬇ Export CSV</Btn>
+                </div>
               </div>
+
               {auditLoading ? (
                 <div style={{ color: '#9ca3af', fontSize: 13, padding: '2rem', textAlign: 'center' }}>Loading…</div>
               ) : (
-                <Table headers={['Date & time', 'Action', 'Employee', 'Leave', 'Duration', 'Actioned by', 'Note']} empty="No audit entries yet">
-                  {auditLog.map(a => {
-                    const req = a.leave_requests
-                    return (
-                      <TR key={a.id}>
-                        <TD style={{ whiteSpace: 'nowrap', color: '#6b7280', fontSize: 12 }}>
-                          {new Date(a.created_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
-                          <div style={{ fontSize: 11 }}>{new Date(a.created_at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}</div>
-                        </TD>
-                        <TD>
-                          <Badge variant={a.action === 'approved' ? 'green' : a.action === 'rejected' ? 'red' : 'gray'}>
-                            {a.action}
-                          </Badge>
-                        </TD>
-                        <TD style={{ fontWeight: 500 }}>{req?.user?.full_name ?? '—'}</TD>
-                        <TD>
-                          {req?.leave_types && (
-                            <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-                              <Swatch color={req.leave_types.color} />
-                              {req.leave_types.name}
-                            </div>
-                          )}
-                        </TD>
-                        <TD style={{ whiteSpace: 'nowrap' }}>
-                          {req ? (
-                            req.hours_requested
-                              ? `${req.hours_requested}h`
-                              : `${req.days_requested} day${req.days_requested === 1 ? '' : 's'}`
-                          ) : '—'}
-                        </TD>
-                        <TD style={{ fontWeight: 500, color: '#374151' }}>{a.performed_by_name ?? '—'}</TD>
-                        <TD style={{ color: '#6b7280', maxWidth: 180, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-                          {a.note || <span style={{ color: '#d1d5db' }}>—</span>}
-                        </TD>
-                      </TR>
-                    )
-                  })}
-                </Table>
+                <>
+                  <Table headers={['Date & time', 'Action', 'Employee', 'Leave', 'Duration', 'Actioned by', 'Note']} empty="No audit entries yet">
+                    {auditLog.map(a => {
+                      const req = a.leave_requests
+                      return (
+                        <TR key={a.id}>
+                          <TD style={{ whiteSpace: 'nowrap', color: '#6b7280', fontSize: 12 }}>
+                            {new Date(a.created_at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
+                            <div style={{ fontSize: 11 }}>{new Date(a.created_at).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' })}</div>
+                          </TD>
+                          <TD>
+                            <Badge variant={
+                              a.action === 'approved'   ? 'green' :
+                              a.action === 'rejected'   ? 'red'   :
+                              a.action === 'adjusted'   ? 'blue'  :
+                              a.action === 'rollover'   ? 'blue'  : 'gray'
+                            }>
+                              {a.action}
+                            </Badge>
+                          </TD>
+                          <TD style={{ fontWeight: 500 }}>{req?.user?.full_name ?? '—'}</TD>
+                          <TD>
+                            {req?.leave_types && (
+                              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                                <Swatch color={req.leave_types.color} />
+                                {req.leave_types.name}
+                              </div>
+                            )}
+                          </TD>
+                          <TD style={{ whiteSpace: 'nowrap' }}>
+                            {req ? (
+                              req.hours_requested
+                                ? `${req.hours_requested}h`
+                                : `${req.days_requested} day${req.days_requested === 1 ? '' : 's'}`
+                            ) : '—'}
+                          </TD>
+                          <TD style={{ fontWeight: 500, color: '#374151' }}>{a.performed_by_name ?? '—'}</TD>
+                          <TD style={{ color: '#6b7280', maxWidth: 200, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }} title={a.note}>
+                            {a.note || <span style={{ color: '#d1d5db' }}>—</span>}
+                          </TD>
+                        </TR>
+                      )
+                    })}
+                  </Table>
+
+                  {/* Pagination */}
+                  {auditTotal > AUDIT_PAGE_SIZE && (
+                    <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginTop:'1rem', fontSize:13 }}>
+                      <div style={{ color:'#6b7280' }}>
+                        Showing {((auditPage-1)*AUDIT_PAGE_SIZE)+1}–{Math.min(auditPage*AUDIT_PAGE_SIZE, auditTotal)} of {auditTotal}
+                      </div>
+                      <div style={{ display:'flex', gap:6 }}>
+                        <Btn size="sm" disabled={auditPage === 1} onClick={() => setAuditPage(p => p-1)}>‹ Previous</Btn>
+                        {Array.from({ length: Math.ceil(auditTotal/AUDIT_PAGE_SIZE) }, (_,i) => i+1)
+                          .filter(p => p === 1 || p === Math.ceil(auditTotal/AUDIT_PAGE_SIZE) || Math.abs(p-auditPage) <= 1)
+                          .reduce((acc, p, i, arr) => {
+                            if (i > 0 && p - arr[i-1] > 1) acc.push('...')
+                            acc.push(p)
+                            return acc
+                          }, [])
+                          .map((p, i) => p === '...'
+                            ? <span key={i} style={{ padding:'0 4px', color:'#9ca3af' }}>…</span>
+                            : <Btn key={p} size="sm" onClick={() => setAuditPage(p)}
+                                style={{ background: p===auditPage?'#1D9E75':'transparent', color: p===auditPage?'#fff':'inherit', borderColor: p===auditPage?'#1D9E75':'#e5e7eb' }}>
+                                {p}
+                              </Btn>
+                          )
+                        }
+                        <Btn size="sm" disabled={auditPage >= Math.ceil(auditTotal/AUDIT_PAGE_SIZE)} onClick={() => setAuditPage(p => p+1)}>Next ›</Btn>
+                      </div>
+                    </div>
+                  )}
+                </>
               )}
             </div>
           )}
