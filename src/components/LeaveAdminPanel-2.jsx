@@ -231,6 +231,7 @@ export default function LeaveAdminPanel() {
   const [invitesLoading, setInvitesLoading] = useState(false)
 
   const [seedLoading, setSeedLoading] = useState(false)
+  const [seedYear,    setSeedYear]    = useState(currentYear + 1) // default to next year so admin seeds ahead
   const [toast, setToast] = useState(null)
 
   // Holiday year state — from get_holiday_year_dates()
@@ -250,6 +251,7 @@ export default function LeaveAdminPanel() {
         setHolidayYearStartDate(data[0].year_start)
         setHolidayYearEndDate(data[0].year_end)
         setAlYear(data[0].year_label)
+        setSeedYear(data[0].year_label + 1) // default seed to next holiday year
       }
     } catch { /* silently ignore */ }
   }, [])
@@ -831,13 +833,13 @@ export default function LeaveAdminPanel() {
     try {
       const { data: { user } } = await supabase.auth.getUser()
       const { data, error } = await supabase.rpc('seed_annual_allowances', {
-        p_year:         holidayYearLabel,
+        p_year:         seedYear,
         p_performed_by: user?.id,
       })
       if (error) throw error
       await loadAllowances(alYear)
       const created = Array.isArray(data) ? data.filter(r => !r.skipped).length : 0
-      showToast(`Seeded ${created} allowances for holiday year ${holidayYearLabel}`)
+      showToast(`Seeded ${created} allowances for holiday year ${seedYear}`)
     } catch (e) {
       showToast(e.message, 'error')
     } finally {
@@ -1350,16 +1352,27 @@ export default function LeaveAdminPanel() {
                   <div style={{ fontSize: 15, fontWeight: 500 }}>Overview</div>
                   <div style={{ fontSize: 13, color: '#6b7280', marginTop: 2 }}>Leave system at a glance</div>
                 </div>
-                <Btn variant="primary" size="sm" onClick={seedAllowances} disabled={seedLoading}>
-                  {seedLoading ? 'Seeding…' : `Seed ${holidayYearLabel} allowances`}
-                </Btn>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                  <select
+                    value={seedYear}
+                    onChange={e => setSeedYear(+e.target.value)}
+                    style={{ fontSize: 13, padding: '0.4rem 0.65rem', border: '0.5px solid #e5e7eb', borderRadius: 8, fontFamily: 'inherit' }}
+                  >
+                    {[holidayYearLabel - 1, holidayYearLabel, holidayYearLabel + 1, holidayYearLabel + 2].map(y => (
+                      <option key={y} value={y}>Holiday year {y}</option>
+                    ))}
+                  </select>
+                  <Btn variant="primary" size="sm" onClick={seedAllowances} disabled={seedLoading}>
+                    {seedLoading ? 'Seeding…' : `Seed ${seedYear} allowances`}
+                  </Btn>
+                </div>
               </div>
 
               <div style={{ display: 'grid', gridTemplateColumns: 'repeat(3,1fr)', gap: 10, marginBottom: '1.25rem' }}>
                 {[
-                  { label: 'Leave types', val: leaveTypes.length, sub: 'Active' },
-                  { label: 'Entitlement rules', val: entitlements.length, sub: 'Across all types' },
-                  { label: 'Allowances seeded', val: allowances.filter(a => a.year === currentYear).length, sub: 'This year' },
+                  { label: 'Leave types',       val: leaveTypes.length,                                            sub: 'Active' },
+                  { label: 'Entitlement rules',  val: entitlements.length,                                          sub: 'Across all types' },
+                  { label: 'Allowances seeded',  val: allowances.filter(a => a.year === holidayYearLabel).length,   sub: `Holiday year ${holidayYearLabel}` },
                 ].map(s => (
                   <div key={s.label} style={{ background: '#f9fafb', borderRadius: 8, padding: '0.9rem 1rem' }}>
                     <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 4 }}>{s.label}</div>
