@@ -250,8 +250,9 @@ export default function LeaveAdminPanel() {
         setHolidayYearLabel(data[0].year_label)
         setHolidayYearStartDate(data[0].year_start)
         setHolidayYearEndDate(data[0].year_end)
-        setAlYear(data[0].year_label)
-        setSeedYear(data[0].year_label + 1) // default seed to next holiday year
+        setSeedYear(data[0].year_label + 1)
+        // Only set alYear once on initial load if it's still the default
+        setAlYear(prev => prev === new Date().getFullYear() ? data[0].year_label : prev)
       }
     } catch { /* silently ignore */ }
   }, [])
@@ -722,7 +723,12 @@ export default function LeaveAdminPanel() {
     loadEmpList()
     loadPublicHolidays()
     loadPendingInvites()
-  }, [loadSettings, loadHolidayYear, loadLeaveTypes, loadEntitlements, loadAllowances, loadEmployees, loadRequests, loadAuditLog, loadEmpList, loadPublicHolidays, loadPendingInvites, alYear])
+  }, [loadSettings, loadHolidayYear, loadLeaveTypes, loadEntitlements, loadAllowances, loadEmployees, loadRequests, loadAuditLog, loadEmpList, loadPublicHolidays, loadPendingInvites])
+
+  // Reload allowances whenever the selected year changes
+  useEffect(() => {
+    loadAllowances(alYear)
+  }, [alYear, loadAllowances])
 
   const saveLeaveType = async () => {
     if (!ltForm.name.trim()) return
