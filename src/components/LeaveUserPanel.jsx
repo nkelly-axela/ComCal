@@ -481,6 +481,35 @@ export default function LeaveUserPanel({ userId, fullName }) {
               </div>
             )}
 
+            {/* Balance warning */}
+            {!form.isHourly && form.typeId && previewDays > 0 && (() => {
+              const bal = balances.find(b => b.leave_type_id === form.typeId)
+              if (!bal) return null
+              const remaining = bal.remaining_days
+              const isOver    = previewDays > remaining
+              const isClose   = !isOver && previewDays >= remaining * 0.8 && remaining > 0
+              if (!isOver && !isClose) return null
+              return (
+                <div style={{
+                  fontSize:12, borderRadius:6, padding:'0.75rem',
+                  marginBottom:'0.85rem',
+                  background: isOver ? '#FCEBEB' : '#FAEEDA',
+                  borderLeft: `3px solid ${isOver ? '#E24B4A' : '#BA7517'}`,
+                  color: isOver ? '#791F1F' : '#633806',
+                }}>
+                  <div style={{ fontWeight:500, marginBottom:3 }}>
+                    {isOver ? '✕ Insufficient balance' : '⚠ Low balance'}
+                  </div>
+                  <div>
+                    {isOver
+                      ? <>You are requesting <strong>{previewDays} days</strong> but only have <strong>{remaining} days</strong> remaining. Your manager will be unable to approve this.</>
+                      : <>This will use <strong>{previewDays}</strong> of your <strong>{remaining}</strong> remaining days, leaving you with <strong>{remaining - previewDays}</strong> day{remaining - previewDays === 1 ? '' : 's'}.</>
+                    }
+                  </div>
+                </div>
+              )
+            })()}
+
             <Field label="Reason (optional)">
               <textarea value={form.reason} onChange={e=>setForm(f=>({...f,reason:e.target.value}))} rows={3} placeholder="Anything your manager should know" style={{ ...inputStyle, fontFamily:'inherit', resize:'vertical' }} />
             </Field>
@@ -491,12 +520,24 @@ export default function LeaveUserPanel({ userId, fullName }) {
                 : previewDays > 0 ? <>This will use <strong>{previewDays}</strong> business day{previewDays===1?'':'s'}.</> : <>Pick a date range.</>}
             </div>
 
-            <div style={{ display:'flex', gap:8, justifyContent:'flex-end', borderTop:'0.5px solid #e5e7eb', paddingTop:'1rem' }}>
-              <Btn size="sm" onClick={resetModal}>Cancel</Btn>
-              <Btn size="sm" variant="primary" onClick={submitRequest} disabled={busy}>
-                {busy ? 'Submitting…' : conflicts.length > 0 ? 'Submit (conflict noted)' : 'Submit request'}
-              </Btn>
-            </div>
+            {(() => {
+              const bal = !form.isHourly && form.typeId ? balances.find(b => b.leave_type_id === form.typeId) : null
+              const isOver = bal && previewDays > bal.remaining_days
+              return (
+                <div style={{ display:'flex', gap:8, justifyContent:'flex-end', borderTop:'0.5px solid #e5e7eb', paddingTop:'1rem' }}>
+                  <Btn size="sm" onClick={resetModal}>Cancel</Btn>
+                  <Btn size="sm" variant={isOver ? 'danger' : 'primary'} onClick={submitRequest} disabled={busy}>
+                    {busy
+                      ? 'Submitting…'
+                      : isOver
+                      ? 'Submit anyway (over limit)'
+                      : conflicts.length > 0
+                      ? 'Submit (conflict noted)'
+                      : 'Submit request'}
+                  </Btn>
+                </div>
+              )
+            })()}
           </div>
         </div>
       )}
