@@ -1718,8 +1718,60 @@ export default function LeaveAdminPanel() {
                 </div>
               </div>
 
+              {/* Rollover summary — shows only when there are rollover rows for selected year */}
+              {(() => {
+                const rolloverRows = allowances.filter(a => a.notes && a.notes.includes(`Rollover from ${alYear}`))
+                if (rolloverRows.length === 0) return null
+
+                // Group by employee
+                const byEmployee = {}
+                rolloverRows.forEach(a => {
+                  if (!byEmployee[a.full_name]) byEmployee[a.full_name] = []
+                  byEmployee[a.full_name].push(a)
+                })
+
+                return (
+                  <div style={{ border: '0.5px solid #bfdbfe', borderRadius: 10, background: '#EFF6FF', padding: '1rem 1.25rem', marginBottom: '1.25rem' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem' }}>
+                      <div style={{ fontSize: 13, fontWeight: 500, color: '#1e40af' }}>
+                        ↩ Rollover days from holiday year {alYear}
+                      </div>
+                      <div style={{ fontSize: 11, color: '#3b82f6' }}>
+                        Expires {new Date(rolloverRows[0].expiry_date).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}
+                      </div>
+                    </div>
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 8 }}>
+                      {Object.entries(byEmployee).map(([name, rows]) => {
+                        const totalRollover  = rows.reduce((sum, r) => sum + Number(r.total_days), 0)
+                        const usedRollover   = rows.reduce((sum, r) => sum + Number(r.used_days), 0)
+                        const remainRollover = totalRollover - usedRollover
+                        const isExpired      = rows[0].expiry_date && new Date(rows[0].expiry_date) < new Date()
+                        return (
+                          <div key={name} style={{ background: '#fff', borderRadius: 8, border: `0.5px solid ${isExpired ? '#fca5a5' : '#bfdbfe'}`, padding: '0.65rem 0.85rem' }}>
+                            <div style={{ fontSize: 12, fontWeight: 500, marginBottom: 4 }}>{name}</div>
+                            <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
+                              <span style={{ fontSize: 18, fontWeight: 600, color: isExpired ? '#991b1b' : '#1e40af' }}>{remainRollover}</span>
+                              <span style={{ fontSize: 11, color: '#6b7280' }}>of {totalRollover} days remaining</span>
+                            </div>
+                            <div style={{ fontSize: 10, color: isExpired ? '#991b1b' : '#9ca3af', marginTop: 4 }}>
+                              {usedRollover > 0 && <span>{usedRollover} used · </span>}
+                              {isExpired ? '⚠ Expired' : `Expires ${new Date(rows[0].expiry_date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}`}
+                            </div>
+                            <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 2 }}>
+                              {rows.map(r => `${r.leave_type}: ${r.remaining_days}d`).join(' · ')}
+                            </div>
+                          </div>
+                        )
+                      })}
+                    </div>
+                  </div>
+                )
+              })()}
+
               <Table headers={['Employee', 'Leave type', 'Total', 'Used', 'Remaining', 'Type', 'Actions']} empty={`No allowances seeded for holiday year ${alYear}. Use Admin → Overview → Seed allowances.`}>
-                {allowances.filter(a => a.year === alYear).map(a => {
+                {allowances
+                  .filter(a => a.year === alYear || (a.notes && a.notes.includes(`Rollover from ${alYear}`)))
+                  .map(a => {
                   const isRollover = a.notes && a.notes.includes('Rollover from')
                   const isExpired  = isRollover && a.expiry_date && new Date(a.expiry_date) < new Date()
                   return (
