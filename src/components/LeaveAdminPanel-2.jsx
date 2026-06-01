@@ -1717,8 +1717,11 @@ export default function LeaveAdminPanel() {
                 </div>
               </div>
 
-              <Table headers={['Employee', 'Leave type', 'Total', 'Used', 'Remaining', 'Actions']} empty={`No allowances seeded for holiday year ${alYear}. Use Admin → Overview → Seed allowances.`}>
-                {allowances.filter(a => a.year === alYear).map(a => (
+              <Table headers={['Employee', 'Leave type', 'Total', 'Used', 'Remaining', 'Type', 'Actions']} empty={`No allowances seeded for holiday year ${alYear}. Use Admin → Overview → Seed allowances.`}>
+                {allowances.filter(a => a.year === alYear).map(a => {
+                  const isRollover = a.notes && a.notes.includes('Rollover from')
+                  const isExpired  = isRollover && a.expiry_date && new Date(a.expiry_date) < new Date()
+                  return (
                   <TR key={a.id}>
                     <TD>
                       <div style={{ fontWeight: 500 }}>{a.full_name}</div>
@@ -1731,6 +1734,22 @@ export default function LeaveAdminPanel() {
                       <strong style={{ color: a.remaining_days < 3 ? '#991b1b' : '#111' }}>
                         {a.remaining_days} days
                       </strong>
+                    </TD>
+                    <TD>
+                      {isRollover ? (
+                        <div>
+                          <span style={{ fontSize: 11, background: isExpired ? '#FCEBEB' : '#E6F1FB', color: isExpired ? '#791F1F' : '#185FA5', padding: '2px 8px', borderRadius: 10, fontWeight: 500 }}>
+                            {isExpired ? '⚠ Expired rollover' : '↩ Rollover'}
+                          </span>
+                          {a.expiry_date && (
+                            <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 2 }}>
+                              {isExpired ? 'Expired' : 'Expires'} {new Date(a.expiry_date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
+                            </div>
+                          )}
+                        </div>
+                      ) : (
+                        <span style={{ fontSize: 11, color: '#9ca3af' }}>Standard</span>
+                      )}
                     </TD>
                     <TD>
                       <div style={{ display: 'flex', gap: 6 }}>
@@ -1748,7 +1767,8 @@ export default function LeaveAdminPanel() {
                       </div>
                     </TD>
                   </TR>
-                ))}
+                  )
+                })}
               </Table>
             </div>
           )}

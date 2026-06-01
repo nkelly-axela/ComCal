@@ -95,6 +95,7 @@ export default function LeaveUserPanel({ userId, fullName }) {
     const { data, error } = await supabase
       .from('v_leave_balances').select('*')
       .eq('user_id', userId).eq('year', yr)
+      .order('notes', { nullsFirst: true }) // standard allowances first, rollover after
     if (error) showToast(error.message, 'error')
     else setBalances(data ?? [])
   }, [userId, holidayYear, currentYear])
@@ -550,13 +551,24 @@ export default function LeaveUserPanel({ userId, fullName }) {
 function BalanceCard({ b }) {
   const pct  = b.total_days > 0 ? Math.round((b.used_days/b.total_days)*100) : 0
   const fill = pct>80?'#E24B4A':pct>50?'#EF9F27':'#1D9E75'
-  const yearLabel = b.year_start && b.year_end
+  const isRollover = b.notes && b.notes.includes('Rollover from')
+  const isExpired  = isRollover && b.expiry_date && new Date(b.expiry_date) < new Date()
+  const yearLabel  = b.year_start && b.year_end
     ? `${new Date(b.year_start).toLocaleDateString('en-GB',{month:'short',year:'numeric'})} – ${new Date(b.year_end).toLocaleDateString('en-GB',{month:'short',year:'numeric'})}`
     : `${b.year}`
+
   return (
-    <div style={{ background:'#f9fafb', borderRadius:10, border:'0.5px solid #e5e7eb', padding:'1rem' }}>
-      <div style={{ display:'flex', alignItems:'center', gap:8, marginBottom:8 }}>
-        <Swatch color={b.color} /><div style={{ fontSize:13, fontWeight:500 }}>{b.leave_type}</div>
+    <div style={{ background: isExpired ? '#FFF5F5' : '#f9fafb', borderRadius:10, border: `0.5px solid ${isExpired ? '#fca5a5' : '#e5e7eb'}`, padding:'1rem' }}>
+      <div style={{ display:'flex', alignItems:'center', justifyContent:'space-between', marginBottom:8 }}>
+        <div style={{ display:'flex', alignItems:'center', gap:8 }}>
+          <Swatch color={b.color} />
+          <div style={{ fontSize:13, fontWeight:500 }}>{b.leave_type}</div>
+        </div>
+        {isRollover && (
+          <span style={{ fontSize:10, fontWeight:500, padding:'2px 7px', borderRadius:10, background: isExpired ? '#FCEBEB' : '#E6F1FB', color: isExpired ? '#791F1F' : '#185FA5' }}>
+            {isExpired ? '⚠ Expired' : '↩ Rollover'}
+          </span>
+        )}
       </div>
       <div style={{ display:'flex', alignItems:'baseline', gap:6 }}>
         <div style={{ fontSize:26, fontWeight:600 }}>{b.remaining_days}</div>
@@ -565,7 +577,14 @@ function BalanceCard({ b }) {
       <div style={{ height:5, background:'#e5e7eb', borderRadius:3, overflow:'hidden', marginTop:10 }}>
         <div style={{ width:`${pct}%`, height:'100%', background:fill }} />
       </div>
-      <div style={{ fontSize:11, color:'#9ca3af', marginTop:6 }}>{b.used_days} used · {yearLabel}</div>
+      <div style={{ fontSize:11, color:'#9ca3af', marginTop:6 }}>
+        {b.used_days} used · {yearLabel}
+        {isRollover && b.expiry_date && (
+          <span style={{ marginLeft:6, color: isExpired ? '#991b1b' : '#854F0B' }}>
+            · {isExpired ? 'Expired' : `Expires ${new Date(b.expiry_date).toLocaleDateString('en-GB', { day:'numeric', month:'short' })}`}
+          </span>
+        )}
+      </div>
     </div>
   )
 }
