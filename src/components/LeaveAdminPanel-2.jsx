@@ -759,8 +759,9 @@ export default function LeaveAdminPanel() {
       const { data, error } = await supabase
         .from('v_leave_balances')
         .select('*')
-        .eq('year', yr)
+        .or(`year.eq.${yr},and(year.eq.${yr + 1},notes.like.Rollover from ${yr}*)`)
         .order('full_name')
+        .order('notes', { nullsFirst: true })
       if (error) throw error
       setAllowances(data)
     } catch (e) {
