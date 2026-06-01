@@ -761,9 +761,8 @@ export default function LeaveAdminPanel() {
         .select('*')
         .or(`year.eq.${yr},and(year.eq.${yr + 1},notes.like.Rollover from ${yr}*)`)
         .order('full_name')
-        .order('notes', { nullsFirst: true })
       if (error) throw error
-      setAllowances(data)
+      setAllowances(data ?? [])
     } catch (e) {
       showToast(e.message, 'error')
     }
@@ -938,7 +937,8 @@ export default function LeaveAdminPanel() {
     { id: 'allowances',   label: 'Allowances',    dot: '#D4537E' },
     { id: 'audit',            label: 'Audit log',       dot: '#6b7280' },
     { id: 'public-holidays',  label: 'Public holidays', dot: '#0EA5E9' },
-    { id: 'rollover',         label: 'Rollover rules',  dot: '#8B5CF6' },
+    { id: 'rollover',          label: 'Rollover rules',    dot: '#8B5CF6' },
+    { id: 'rollover-balances', label: 'Rollover balances', dot: '#6D28D9' },
     { id: 'ai-review',        label: 'AI review',       dot: '#7F77DD' },
   ]
 
@@ -1481,6 +1481,118 @@ export default function LeaveAdminPanel() {
             </div>
           )}
 
+          {tab === 'rollover-balances' && (
+            <div>
+              <div style={{ marginBottom: '1.25rem' }}>
+                <div style={{ fontSize: 15, fontWeight: 500 }}>Rollover balances</div>
+                <div style={{ fontSize: 13, color: '#6b7280', marginTop: 2 }}>
+                  Carried-over days from previous holiday years — how many remain and when they expire
+                </div>
+              </div>
+
+              {/* Year selector for rollover */}
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center', marginBottom: '1.25rem' }}>
+                <span style={{ fontSize: 13, color: '#6b7280' }}>Rolled from holiday year:</span>
+                <select
+                  value={alYear}
+                  onChange={e => setAlYear(+e.target.value)}
+                  style={{ fontSize: 13, padding: '0.4rem 0.65rem', border: '0.5px solid #e5e7eb', borderRadius: 8, fontFamily: 'inherit' }}
+                >
+                  {[holidayYearLabel - 1, holidayYearLabel, holidayYearLabel + 1].map(y => (
+                    <option key={y} value={y}>Holiday year {y}</option>
+                  ))}
+                </select>
+              </div>
+
+              {(() => {
+                // Get rollover rows for the selected year (stored as year+1 with notes)
+                const rolloverRows = allowances.filter(a =>
+                  a.notes && a.notes.includes(`Rollover from ${alYear}`)
+                )
+
+                if (rolloverRows.length === 0) {
+                  return (
+                    <div style={{ padding: '3rem', textAlign: 'center', color: '#9ca3af', fontSize: 13, border: '0.5px dashed #e5e7eb', borderRadius: 8 }}>
+                      No rollover days found for holiday year {alYear}.
+                      Run the year-end rollover from the Rollover rules tab first.
+                    </div>
+                  )
+                }
+
+                // Group by employee
+                const byEmployee = {}
+                rolloverRows.forEach(a => {
+                  if (!byEmployee[a.full_name]) byEmployee[a.full_name] = { name: a.full_name, role: a.role, rows: [] }
+                  byEmployee[a.full_name].rows.push(a)
+                })
+
+                const expiryDate   = rolloverRows[0]?.expiry_date
+                const isExpired    = expiryDate && new Date(expiryDate) < new Date()
+                const totalPeople  = Object.keys(byEmployee).length
+                const totalDays    = rolloverRows.reduce((s, r) => s + Number(r.total_days), 0)
+                const remainDays   = rolloverRows.reduce((s, r) => s + Number(r.remaining_days), 0)
+
+                return (
+                  <>
+                    {/* Summary stats */}
+                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: '1.25rem' }}>
+                      {[
+                        { label: 'Employees with rollover', val: totalPeople },
+                        { label: 'Total days rolled over',  val: totalDays },
+                        { label: 'Days remaining',          val: remainDays, warn: remainDays > 0 && !isExpired },
+                        { label: 'Expiry date',             val: expiryDate ? new Date(expiryDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '—', expired: isExpired },
+                      ].map(s => (
+                        <div key={s.label} style={{ background: s.expired ? '#FEF2F2' : '#f9fafb', borderRadius: 8, padding: '0.9rem 1rem', border: `0.5px solid ${s.expired ? '#fca5a5' : '#e5e7eb'}` }}>
+                          <div style={{ fontSize: 12, color: '#6b7280', marginBottom: 4 }}>{s.label}</div>
+                          <div style={{ fontSize: 18, fontWeight: 500, color: s.expired ? '#991b1b' : s.warn ? '#1e40af' : '#111' }}>{s.val}</div>
+                          {s.expired && <div style={{ fontSize: 10, color: '#991b1b', marginTop: 2 }}>⚠ These days have expired</div>}
+                        </div>
+                      ))}
+                    </div>
+
+                    {isExpired && (
+                      <div style={{ fontSize: 12, color: '#991b1b', background: '#FEF2F2', borderRadius: 8, padding: '0.65rem 0.85rem', marginBottom: '1rem', border: '0.5px solid #fca5a5' }}>
+                        ⚠ These rollover days expired on {new Date(expiryDate).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}. Any remaining days can no longer be used.
+                        Run <strong>Admin → Rollover rules → expire_rolled_over_days()</strong> to zero them out.
+                      </div>
+                    )}
+
+                    {/* Per-employee breakdown */}
+                    <Table headers={['Employee', 'Leave type', 'Rolled over', 'Used', 'Remaining', 'Expiry', 'Status']} empty="No rollover rows">
+                      {rolloverRows.map(a => {
+                        const expired = a.expiry_date && new Date(a.expiry_date) < new Date()
+                        return (
+                          <TR key={a.id}>
+                            <TD>
+                              <div style={{ fontWeight: 500 }}>{a.full_name}</div>
+                              <div style={{ fontSize: 11, color: '#9ca3af' }}>{a.role}</div>
+                            </TD>
+                            <TD><Swatch color={a.color} />{a.leave_type}</TD>
+                            <TD>{a.total_days} days</TD>
+                            <TD><ProgressBar used={a.used_days} total={a.total_days} /></TD>
+                            <TD>
+                              <strong style={{ color: expired ? '#991b1b' : a.remaining_days === 0 ? '#9ca3af' : '#1e40af' }}>
+                                {a.remaining_days} days
+                              </strong>
+                            </TD>
+                            <TD style={{ fontSize: 12, color: expired ? '#991b1b' : '#6b7280', whiteSpace: 'nowrap' }}>
+                              {a.expiry_date ? new Date(a.expiry_date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' }) : '—'}
+                            </TD>
+                            <TD>
+                              <Badge variant={expired ? 'red' : a.remaining_days === 0 ? 'gray' : 'blue'}>
+                                {expired ? 'Expired' : a.remaining_days === 0 ? 'All used' : 'Active'}
+                              </Badge>
+                            </TD>
+                          </TR>
+                        )
+                      })}
+                    </Table>
+                  </>
+                )
+              })()}
+            </div>
+          )}
+
           {tab === 'ai-review' && (
             <AIReviewTab requests={requests} employees={employees} />
           )}
@@ -1718,63 +1830,8 @@ export default function LeaveAdminPanel() {
                 </div>
               </div>
 
-              {/* Rollover summary — shows only when there are rollover rows for selected year */}
-              {(() => {
-                const rolloverRows = allowances.filter(a => a.notes && a.notes.includes(`Rollover from ${alYear}`))
-                if (rolloverRows.length === 0) return null
-
-                // Group by employee
-                const byEmployee = {}
-                rolloverRows.forEach(a => {
-                  if (!byEmployee[a.full_name]) byEmployee[a.full_name] = []
-                  byEmployee[a.full_name].push(a)
-                })
-
-                return (
-                  <div style={{ border: '0.5px solid #bfdbfe', borderRadius: 10, background: '#EFF6FF', padding: '1rem 1.25rem', marginBottom: '1.25rem' }}>
-                    <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.75rem' }}>
-                      <div style={{ fontSize: 13, fontWeight: 500, color: '#1e40af' }}>
-                        ↩ Rollover days from holiday year {alYear}
-                      </div>
-                      <div style={{ fontSize: 11, color: '#3b82f6' }}>
-                        Expires {new Date(rolloverRows[0].expiry_date).toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}
-                      </div>
-                    </div>
-                    <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))', gap: 8 }}>
-                      {Object.entries(byEmployee).map(([name, rows]) => {
-                        const totalRollover  = rows.reduce((sum, r) => sum + Number(r.total_days), 0)
-                        const usedRollover   = rows.reduce((sum, r) => sum + Number(r.used_days), 0)
-                        const remainRollover = totalRollover - usedRollover
-                        const isExpired      = rows[0].expiry_date && new Date(rows[0].expiry_date) < new Date()
-                        return (
-                          <div key={name} style={{ background: '#fff', borderRadius: 8, border: `0.5px solid ${isExpired ? '#fca5a5' : '#bfdbfe'}`, padding: '0.65rem 0.85rem' }}>
-                            <div style={{ fontSize: 12, fontWeight: 500, marginBottom: 4 }}>{name}</div>
-                            <div style={{ display: 'flex', alignItems: 'baseline', gap: 6 }}>
-                              <span style={{ fontSize: 18, fontWeight: 600, color: isExpired ? '#991b1b' : '#1e40af' }}>{remainRollover}</span>
-                              <span style={{ fontSize: 11, color: '#6b7280' }}>of {totalRollover} days remaining</span>
-                            </div>
-                            <div style={{ fontSize: 10, color: isExpired ? '#991b1b' : '#9ca3af', marginTop: 4 }}>
-                              {usedRollover > 0 && <span>{usedRollover} used · </span>}
-                              {isExpired ? '⚠ Expired' : `Expires ${new Date(rows[0].expiry_date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short' })}`}
-                            </div>
-                            <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 2 }}>
-                              {rows.map(r => `${r.leave_type}: ${r.remaining_days}d`).join(' · ')}
-                            </div>
-                          </div>
-                        )
-                      })}
-                    </div>
-                  </div>
-                )
-              })()}
-
-              <Table headers={['Employee', 'Leave type', 'Total', 'Used', 'Remaining', 'Type', 'Actions']} empty={`No allowances seeded for holiday year ${alYear}. Use Admin → Overview → Seed allowances.`}>
-                {allowances
-                  .filter(a => a.year === alYear || (a.notes && a.notes.includes(`Rollover from ${alYear}`)))
-                  .map(a => {
-                  const isRollover = a.notes && a.notes.includes('Rollover from')
-                  const isExpired  = isRollover && a.expiry_date && new Date(a.expiry_date) < new Date()
-                  return (
+              <Table headers={['Employee', 'Leave type', 'Total', 'Used', 'Remaining', 'Actions']} empty={`No allowances seeded for holiday year ${alYear}. Use Admin → Overview → Seed allowances.`}>
+                {allowances.filter(a => a.year === alYear && (!a.notes || !a.notes.includes('Rollover from'))).map(a => (
                   <TR key={a.id}>
                     <TD>
                       <div style={{ fontWeight: 500 }}>{a.full_name}</div>
@@ -1787,22 +1844,6 @@ export default function LeaveAdminPanel() {
                       <strong style={{ color: a.remaining_days < 3 ? '#991b1b' : '#111' }}>
                         {a.remaining_days} days
                       </strong>
-                    </TD>
-                    <TD>
-                      {isRollover ? (
-                        <div>
-                          <span style={{ fontSize: 11, background: isExpired ? '#FCEBEB' : '#E6F1FB', color: isExpired ? '#791F1F' : '#185FA5', padding: '2px 8px', borderRadius: 10, fontWeight: 500 }}>
-                            {isExpired ? '⚠ Expired rollover' : '↩ Rollover'}
-                          </span>
-                          {a.expiry_date && (
-                            <div style={{ fontSize: 10, color: '#9ca3af', marginTop: 2 }}>
-                              {isExpired ? 'Expired' : 'Expires'} {new Date(a.expiry_date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
-                            </div>
-                          )}
-                        </div>
-                      ) : (
-                        <span style={{ fontSize: 11, color: '#9ca3af' }}>Standard</span>
-                      )}
                     </TD>
                     <TD>
                       <div style={{ display: 'flex', gap: 6 }}>
@@ -1820,8 +1861,7 @@ export default function LeaveAdminPanel() {
                       </div>
                     </TD>
                   </TR>
-                  )
-                })}
+                ))}
               </Table>
             </div>
           )}
