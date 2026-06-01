@@ -92,10 +92,13 @@ export default function LeaveUserPanel({ userId, fullName }) {
   }, [])
   const loadBalances = useCallback(async () => {
     const yr = holidayYear ?? currentYear
+    // Fetch current year allowances + any rollover rows for next year
     const { data, error } = await supabase
-      .from('v_leave_balances').select('*')
-      .eq('user_id', userId).eq('year', yr)
-      .order('notes', { nullsFirst: true }) // standard allowances first, rollover after
+      .from('v_leave_balances')
+      .select('*')
+      .eq('user_id', userId)
+      .or(`year.eq.${yr},and(year.eq.${yr + 1},notes.like.Rollover from ${yr}*)`)
+      .order('notes', { nullsFirst: true })
     if (error) showToast(error.message, 'error')
     else setBalances(data ?? [])
   }, [userId, holidayYear, currentYear])
