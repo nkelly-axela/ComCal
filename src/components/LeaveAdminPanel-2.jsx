@@ -622,8 +622,10 @@ export default function LeaveAdminPanel() {
     setRolloverPreview(null)
     try {
       const { data: { user } } = await supabase.auth.getUser()
+      // Always roll FROM the previous holiday year (the one that just ended)
+      const fromYear = holidayYearLabel - 1
       const { data, error } = await supabase.rpc('process_year_end_rollover', {
-        p_from_year:    holidayYearLabel,
+        p_from_year:    fromYear,
         p_performed_by: user?.id,
       })
       if (error) throw error
@@ -1438,9 +1440,8 @@ export default function LeaveAdminPanel() {
               <div style={{ border:'0.5px solid #e5e7eb', borderRadius:10, padding:'1.25rem', marginBottom:'1.25rem' }}>
                 <div style={{ fontSize:13, fontWeight:500, marginBottom:4 }}>Run year-end rollover</div>
                 <div style={{ fontSize:12, color:'#6b7280', marginBottom:'1rem' }}>
-                  Processes the current holiday year rollover for all employees based on your
-                  holiday year start date ({holidayYearStart || '01-01'}).
-                  Creates new allowance rows for carried-over days, capped at your policy above.
+                  Processes rollover from holiday year <strong>{holidayYearLabel - 1}</strong> → <strong>{holidayYearLabel}</strong> for all employees.
+                  Reads unused days from the year that just ended, caps at your policy, and creates rollover allowance rows for the new year.
                   Safe to re-run — existing rollover rows are skipped.
                 </div>
                 <div style={{ fontSize:12, color:'#854F0B', background:'#FAEEDA', borderRadius:8, padding:'0.6rem 0.85rem', marginBottom:'1rem', border:'0.5px solid #fcd34d' }}>
@@ -1498,7 +1499,7 @@ export default function LeaveAdminPanel() {
                   onChange={e => setAlYear(+e.target.value)}
                   style={{ fontSize: 13, padding: '0.4rem 0.65rem', border: '0.5px solid #e5e7eb', borderRadius: 8, fontFamily: 'inherit' }}
                 >
-                  {[holidayYearLabel - 1, holidayYearLabel, holidayYearLabel + 1].map(y => (
+                  {[holidayYearLabel - 2, holidayYearLabel - 1, holidayYearLabel].map(y => (
                     <option key={y} value={y}>Holiday year {y}</option>
                   ))}
                 </select>
