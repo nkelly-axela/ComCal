@@ -196,7 +196,7 @@ export default function LeaveAdminPanel() {
   const [ltLoading, setLtLoading] = useState(false)
   const [ltModal, setLtModal] = useState(false)
   const [ltEditing, setLtEditing] = useState(null)
-  const [ltForm, setLtForm] = useState({ name: '', days: '', color: '#4CAF50', approval: true })
+  const [ltForm, setLtForm] = useState({ name: '', days: '', color: '#4CAF50', approval: true, rollover: false })
 
   const [entitlements, setEntitlements] = useState([])
   const [entModal, setEntModal] = useState(false)
@@ -816,6 +816,7 @@ export default function LeaveAdminPanel() {
           max_days_per_year: ltForm.days ? +ltForm.days : null,
           color: ltForm.color,
           requires_approval: ltForm.approval,
+          rollover_eligible: ltForm.rollover,
         }).eq('id', ltEditing)
         if (error) throw error
         showToast('Leave type updated')
@@ -825,6 +826,7 @@ export default function LeaveAdminPanel() {
           max_days_per_year: ltForm.days ? +ltForm.days : null,
           color: ltForm.color,
           requires_approval: ltForm.approval,
+          rollover_eligible: ltForm.rollover,
         })
         if (error) throw error
         showToast('Leave type added')
@@ -1440,7 +1442,7 @@ export default function LeaveAdminPanel() {
               <div style={{ border:'0.5px solid #e5e7eb', borderRadius:10, padding:'1.25rem', marginBottom:'1.25rem' }}>
                 <div style={{ fontSize:13, fontWeight:500, marginBottom:4 }}>Run year-end rollover</div>
                 <div style={{ fontSize:12, color:'#6b7280', marginBottom:'1rem' }}>
-                  Processes rollover from holiday year <strong>{holidayYearLabel - 1}</strong> → <strong>{holidayYearLabel}</strong> for all employees.
+                  Processes rollover from holiday year <strong>{holidayYearLabel - 1}</strong> → <strong>{holidayYearLabel}</strong> for all employees, for leave types marked rollover-eligible in the Leave types tab.
                   Reads unused days from the year that just ended, caps at your policy, and creates rollover allowance rows for the new year.
                   Safe to re-run — existing rollover rows are skipped.
                 </div>
@@ -1725,12 +1727,12 @@ export default function LeaveAdminPanel() {
                 </div>
                 <Btn variant="primary" size="sm" onClick={() => {
                   setLtEditing(null)
-                  setLtForm({ name: '', days: '', color: '#4CAF50', approval: true })
+                  setLtForm({ name: '', days: '', color: '#4CAF50', approval: true, rollover: false })
                   setLtModal(true)
                 }}>+ Add type</Btn>
               </div>
 
-              <Table headers={['Name', 'Colour', 'Max days/yr', 'Requires approval', 'Actions']} empty="No leave types yet">
+              <Table headers={['Name', 'Colour', 'Max days/yr', 'Requires approval', 'Rollover', 'Actions']} empty="No leave types yet">
                 {leaveTypes.map(lt => (
                   <TR key={lt.id}>
                     <TD><span style={{ fontWeight: 500 }}>{lt.name}</span></TD>
@@ -1755,10 +1757,30 @@ export default function LeaveAdminPanel() {
                       }} />
                     </TD>
                     <TD>
+                      <Toggle checked={lt.rollover_eligible} onChange={async (val) => {
+                        setLeaveTypes(prev => prev.map(l => l.id === lt.id ? { ...l, rollover_eligible: val } : l))
+                        const { error } = await supabase
+                          .from('leave_types')
+                          .update({ rollover_eligible: val })
+                          .eq('id', lt.id)
+                        if (error) {
+                          showToast(error.message, 'error')
+                          setLeaveTypes(prev => prev.map(l => l.id === lt.id ? { ...l, rollover_eligible: !val } : l))
+                        } else {
+                          showToast(
+                            val
+                              ? `Unused ${lt.name} days will now roll over at year-end.`
+                              : `${lt.name} will no longer roll over. Existing rollover balances for this type are not affected automatically — see the Rollover rules tab.`,
+                            'success'
+                          )
+                        }
+                      }} />
+                    </TD>
+                    <TD>
                       <div style={{ display: 'flex', gap: 6 }}>
                         <Btn size="sm" onClick={() => {
                           setLtEditing(lt.id)
-                          setLtForm({ name: lt.name, days: lt.max_days_per_year ?? '', color: lt.color, approval: lt.requires_approval })
+                          setLtForm({ name: lt.name, days: lt.max_days_per_year ?? '', color: lt.color, approval: lt.requires_approval, rollover: lt.rollover_eligible })
                           setLtModal(true)
                         }}>Edit</Btn>
                         <Btn size="sm" variant="danger" onClick={() => deleteLeaveType(lt.id)}>Delete</Btn>
@@ -1889,6 +1911,10 @@ export default function LeaveAdminPanel() {
         <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.85rem' }}>
           <label style={{ fontSize: 13 }}>Requires approval</label>
           <Toggle checked={ltForm.approval} onChange={val => setLtForm(f => ({ ...f, approval: val }))} />
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '0.85rem' }}>
+          <label style={{ fontSize: 13 }}>Unused days roll over at year-end</label>
+          <Toggle checked={ltForm.rollover} onChange={val => setLtForm(f => ({ ...f, rollover: val }))} />
         </div>
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', borderTop: '0.5px solid #e5e7eb', paddingTop: '1rem' }}>
           <Btn size="sm" onClick={() => setLtModal(false)}>Cancel</Btn>
