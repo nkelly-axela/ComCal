@@ -19,7 +19,7 @@
 
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { supabase } from '../lib/supabase'
-import { sendEmail, emailShell } from '../lib/notify'
+import { notifyApprovers } from '../lib/notify'
 
 // ─── Helpers ──────────────────────────────────────────────────
 
@@ -160,36 +160,6 @@ export default function LeaveUserPanel({ userId, fullName }) {
       setConflicts([])
     }
   }, [form.start, form.end, form.isHourly, checkConflicts])
-
-  // ── Email notification to approvers (fire-and-forget) ────────
-  const notifyApprovers = async ({ typeName, when, amount, reason, conflict }) => {
-    try {
-      const { data: approvers } = await supabase
-        .from('users')
-        .select('email')
-        .in('role', ['admin', 'manager'])
-      const emails = [...new Set((approvers ?? []).map(a => a.email).filter(Boolean))]
-      if (!emails.length) return
-
-      sendEmail({
-        to: emails,
-        subject: `New leave request from ${fullName}`,
-        html: emailShell('New leave request', `
-          <p><strong>${fullName}</strong> has submitted a leave request:</p>
-          <p>
-            <strong>Type:</strong> ${typeName}<br/>
-            <strong>When:</strong> ${when}<br/>
-            <strong>Amount:</strong> ${amount}
-            ${reason ? `<br/><strong>Reason:</strong> ${reason}` : ''}
-            ${conflict ? `<br/><strong style="color:#b45309;">⚠ Overlaps with colleagues already off — see admin panel for details.</strong>` : ''}
-          </p>
-          <p>Please review it in ComCal.</p>
-        `),
-      })
-    } catch (e) {
-      console.warn('Approver notification failed:', e)
-    }
-  }
 
   // ── Submit ────────────────────────────────────────────────────
   const submitRequest = async () => {
