@@ -17,6 +17,7 @@
 
 import React, { useState, useEffect, useCallback } from 'react'
 import { supabase } from '../lib/supabase'
+import { sendEmail, emailShell } from '../lib/notify'
 
 // ─── Colour swatch ────────────────────────────────────────────
 const Swatch = ({ color }) => (
@@ -290,7 +291,7 @@ export default function LeaveAdminPanel() {
           id, start_date, end_date, days_requested, hours_requested,
           status, reason, admin_note, conflict_flag, conflict_detail, created_at,
           leave_types ( name, color ),
-          user:users!leave_requests_user_id_fkey ( full_name, role )
+          user:users!leave_requests_user_id_fkey ( full_name, role, email )
         `)
         .order('created_at', { ascending: false })
       if (error) throw error
@@ -392,6 +393,30 @@ export default function LeaveAdminPanel() {
         approve_cancellation: 'Cancellation approved — days restored',
         reject_cancellation:  'Cancellation rejected — leave reinstated',
       }[action]
+
+      // ── Email the requester with the outcome (fire-and-forget) ──
+      const reqRow = requests.find(r => r.id === id)
+      if (reqRow?.user?.email) {
+        const outcome = {
+          approve:              { word: 'approved',  colour: '#0F6E56' },
+          reject:               { word: 'rejected',  colour: '#A32D2D' },
+          approve_cancellation: { word: 'cancelled — your days have been restored', colour: '#374151' },
+          reject_cancellation:  { word: 'kept in place — your cancellation request was declined', colour: '#374151' },
+        }[action]
+        const when = reqRow.hours_requested
+          ? `${new Date(reqRow.start_date).toLocaleDateString(undefined, { day:'numeric', month:'short', year:'numeric' })} (${reqRow.hours_requested}h)`
+          : `${new Date(reqRow.start_date).toLocaleDateString(undefined, { day:'numeric', month:'short', year:'numeric' })} – ${new Date(reqRow.end_date).toLocaleDateString(undefined, { day:'numeric', month:'short', year:'numeric' })} (${reqRow.days_requested} days)`
+        sendEmail({
+          to: reqRow.user.email,
+          subject: `Your leave request has been ${action === 'approve' ? 'approved' : action === 'reject' ? 'rejected' : 'updated'}`,
+          html: emailShell('Leave request update', `
+            <p>Your <strong>${reqRow.leave_types?.name ?? 'leave'}</strong> request for <strong>${when}</strong> has been
+            <strong style="color:${outcome.colour};">${outcome.word}</strong>.</p>
+            ${actionNote.trim() ? `<p><strong>Note from your manager:</strong> ${actionNote.trim()}</p>` : ''}
+            <p>You can view the details in ComCal.</p>
+          `),
+        })
+      }
 
       showToast(toastMsg)
       setActionModal(null)
