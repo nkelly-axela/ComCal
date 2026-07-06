@@ -17,7 +17,7 @@
 
 import React, { useState, useEffect, useCallback } from 'react'
 import { supabase } from '../lib/supabase'
-import { sendEmail, emailShell } from '../lib/notify'
+import { sendEmail, emailShell, EMAIL_BADGES } from '../lib/notify'
 
 // ─── Colour swatch ────────────────────────────────────────────
 const Swatch = ({ color }) => (
@@ -410,11 +410,28 @@ export default function LeaveAdminPanel() {
           to: reqRow.user.email,
           subject: `Your leave request has been ${action === 'approve' ? 'approved' : action === 'reject' ? 'rejected' : 'updated'}`,
           html: emailShell('Leave request update', `
-            <p>Your <strong>${reqRow.leave_types?.name ?? 'leave'}</strong> request for <strong>${when}</strong> has been
+            <p style="margin:0 0 14px;">Hi ${reqRow.user.full_name?.split(' ')[0] ?? 'there'}, your leave request has been
             <strong style="color:${outcome.colour};">${outcome.word}</strong>.</p>
-            ${actionNote.trim() ? `<p><strong>Note from your manager:</strong> ${actionNote.trim()}</p>` : ''}
-            <p>You can view the details in ComCal.</p>
-          `),
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;">
+              <tr>
+                <td style="padding:8px 14px;font-size:13px;color:#6b7280;white-space:nowrap;vertical-align:top;">Type</td>
+                <td style="padding:8px 14px;font-size:13px;color:#111827;font-weight:500;">${reqRow.leave_types?.name ?? 'Leave'}</td>
+              </tr>
+              <tr>
+                <td style="padding:8px 14px;font-size:13px;color:#6b7280;white-space:nowrap;vertical-align:top;">When</td>
+                <td style="padding:8px 14px;font-size:13px;color:#111827;font-weight:500;">${when}</td>
+              </tr>
+              ${actionNote.trim() ? `<tr>
+                <td style="padding:8px 14px;font-size:13px;color:#6b7280;white-space:nowrap;vertical-align:top;">Note from your manager</td>
+                <td style="padding:8px 14px;font-size:13px;color:#111827;font-weight:500;">${actionNote.trim()}</td>
+              </tr>` : ''}
+            </table>
+          `, { badge: {
+            approve:              EMAIL_BADGES.approved,
+            reject:               EMAIL_BADGES.rejected,
+            approve_cancellation: EMAIL_BADGES.cancelled,
+            reject_cancellation:  EMAIL_BADGES.approved,
+          }[action] }),
         })
       }
 
