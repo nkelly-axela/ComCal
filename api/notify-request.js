@@ -65,25 +65,61 @@ export default async function handler(req, res) {
 
     // ── 3. Send via Resend ──────────────────────────────────────
     const esc = s => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    const html = `
-    <div style="font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;max-width:560px;margin:0 auto;padding:24px;">
-      <div style="font-size:18px;font-weight:600;color:#111827;margin-bottom:4px;">ComCal</div>
-      <div style="font-size:15px;font-weight:600;color:#111827;margin-bottom:16px;">New leave request</div>
-      <div style="font-size:14px;color:#374151;line-height:1.6;">
-        <p><strong>${esc(fullName)}</strong> has submitted a leave request:</p>
-        <p>
-          <strong>Type:</strong> ${esc(typeName)}<br/>
-          <strong>When:</strong> ${esc(when)}<br/>
-          <strong>Amount:</strong> ${esc(amount)}
-          ${reason ? `<br/><strong>Reason:</strong> ${esc(reason)}` : ''}
-          ${conflict ? `<br/><strong style="color:#b45309;">&#9888; Overlaps with colleagues already off — see admin panel for details.</strong>` : ''}
-        </p>
-        <p>Please review it in ComCal.</p>
-      </div>
-      <div style="font-size:12px;color:#9ca3af;margin-top:24px;border-top:1px solid #e5e7eb;padding-top:12px;">
-        This is an automated notification from the Axela leave management system.
-      </div>
-    </div>`;
+    const row = (k, v) => `<tr>
+      <td style="padding:8px 14px;font-size:13px;color:#6b7280;white-space:nowrap;vertical-align:top;">${k}</td>
+      <td style="padding:8px 14px;font-size:13px;color:#111827;font-weight:500;">${v}</td>
+    </tr>`;
+
+    const html = `<!DOCTYPE html>
+<html>
+<body style="margin:0;padding:0;background:#f5f5f4;">
+  <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f5f5f4;padding:32px 16px;">
+    <tr><td align="center">
+      <table role="presentation" width="560" cellpadding="0" cellspacing="0" style="max-width:560px;width:100%;background:#ffffff;border-radius:12px;overflow:hidden;border:1px solid #e5e7eb;font-family:-apple-system,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;">
+        <tr>
+          <td style="background:#1D9E75;padding:20px 32px;">
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0"><tr>
+              <td style="font-size:20px;font-weight:700;color:#ffffff;letter-spacing:.2px;">ComCal</td>
+              <td align="right" style="font-size:12px;color:#E1F5EE;">Axela Group · Leave Management</td>
+            </tr></table>
+          </td>
+        </tr>
+        <tr><td style="height:28px;line-height:28px;font-size:0;">&nbsp;</td></tr>
+        <tr><td style="padding:0 32px;font-size:18px;font-weight:600;color:#111827;">New leave request</td></tr>
+        <tr><td style="height:12px;line-height:12px;font-size:0;">&nbsp;</td></tr>
+        <tr><td style="padding:0 32px;">
+          <span style="display:inline-block;font-size:12px;font-weight:600;letter-spacing:.3px;text-transform:uppercase;padding:4px 12px;border-radius:999px;background:#FAEEDA;color:#854F0B;">Pending review</span>
+        </td></tr>
+        <tr><td style="height:14px;line-height:14px;font-size:0;">&nbsp;</td></tr>
+        <tr>
+          <td style="padding:0 32px;font-size:14px;color:#374151;line-height:1.65;">
+            <p style="margin:0 0 14px;"><strong>${esc(fullName)}</strong> has submitted a leave request:</p>
+            <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;">
+              ${row('Type', esc(typeName))}
+              ${row('When', esc(when))}
+              ${row('Amount', esc(amount))}
+              ${reason ? row('Reason', esc(reason)) : ''}
+            </table>
+            ${conflict ? `<p style="margin:14px 0 0;padding:10px 14px;background:#FAEEDA;border-radius:8px;font-size:13px;color:#854F0B;"><strong>&#9888; Conflict flagged</strong> — this request overlaps with colleagues already off. See the admin panel for details.</p>` : ''}
+          </td>
+        </tr>
+        <tr><td style="height:24px;line-height:24px;font-size:0;">&nbsp;</td></tr>
+        <tr>
+          <td style="padding:0 32px;">
+            <a href="https://comcal.axela.co.uk" style="display:inline-block;background:#1D9E75;color:#ffffff;font-size:14px;font-weight:600;text-decoration:none;padding:10px 22px;border-radius:8px;">Review in ComCal</a>
+          </td>
+        </tr>
+        <tr><td style="height:28px;line-height:28px;font-size:0;">&nbsp;</td></tr>
+        <tr>
+          <td style="padding:16px 32px;border-top:1px solid #e5e7eb;font-size:12px;color:#9ca3af;line-height:1.6;">
+            This is an automated notification from ComCal, the Axela Group leave management system. Please don't reply to this email.
+          </td>
+        </tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`;
 
     const sendRes = await fetch('https://api.resend.com/emails', {
       method: 'POST',
