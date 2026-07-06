@@ -19,6 +19,7 @@
 
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { supabase } from '../lib/supabase'
+import { sendEmail, emailShell } from '../lib/notify'
 
 // ─── Helpers ──────────────────────────────────────────────────
 
@@ -160,6 +161,36 @@ export default function LeaveUserPanel({ userId, fullName }) {
     }
   }, [form.start, form.end, form.isHourly, checkConflicts])
 
+  // ── Email notification to approvers (fire-and-forget) ────────
+  const notifyApprovers = async ({ typeName, when, amount, reason, conflict }) => {
+    try {
+      const { data: approvers } = await supabase
+        .from('users')
+        .select('email')
+        .in('role', ['admin', 'manager'])
+      const emails = [...new Set((approvers ?? []).map(a => a.email).filter(Boolean))]
+      if (!emails.length) return
+
+      sendEmail({
+        to: emails,
+        subject: `New leave request from ${fullName}`,
+        html: emailShell('New leave request', `
+          <p><strong>${fullName}</strong> has submitted a leave request:</p>
+          <p>
+            <strong>Type:</strong> ${typeName}<br/>
+            <strong>When:</strong> ${when}<br/>
+            <strong>Amount:</strong> ${amount}
+            ${reason ? `<br/><strong>Reason:</strong> ${reason}` : ''}
+            ${conflict ? `<br/><strong style="color:#b45309;">⚠ Overlaps with colleagues already off — see admin panel for details.</strong>` : ''}
+          </p>
+          <p>Please review it in ComCal.</p>
+        `),
+      })
+    } catch (e) {
+      console.warn('Approver notification failed:', e)
+    }
+  }
+
   // ── Submit ────────────────────────────────────────────────────
   const submitRequest = async () => {
     if (!form.typeId) { showToast('Pick a leave type', 'error'); return }
@@ -178,6 +209,13 @@ export default function LeaveUserPanel({ userId, fullName }) {
           conflict_flag: false, conflict_detail: null,
         })
         if (error) throw error
+        notifyApprovers({
+          typeName: leaveTypes.find(t => t.id === form.typeId)?.name ?? 'Leave',
+          when:     fmtDate(form.hourDate),
+          amount:   `${hrs} hour${hrs === 1 ? '' : 's'}`,
+          reason:   form.reason || null,
+          conflict: false,
+        })
         showToast('Request submitted')
         resetModal()
         await loadRequests()
@@ -208,6 +246,13 @@ export default function LeaveUserPanel({ userId, fullName }) {
         conflict_detail: conflictDetail,
       })
       if (error) throw error
+      notifyApprovers({
+        typeName: leaveTypes.find(t => t.id === form.typeId)?.name ?? 'Leave',
+        when:     `${fmtDate(form.start)} – ${fmtDate(form.end)}`,
+        amount:   `${days} working day${days === 1 ? '' : 's'}`,
+        reason:   form.reason || null,
+        conflict: hasConflict,
+      })
       showToast(hasConflict ? 'Request submitted — conflict flagged to manager' : 'Request submitted')
       resetModal()
       await loadRequests()
