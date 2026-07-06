@@ -1,28 +1,52 @@
 /**
  * src/lib/notify.js
  * ─────────────────────────────────────────────────────────────
- * Fire-and-forget email notifications via the /api/send-email
- * Vercel serverless function (which calls Resend server-side).
+ * Fire-and-forget email notifications via the Vercel serverless
+ * functions (which call Resend server-side).
+ *
+ * Every call attaches the caller's Supabase session token, which
+ * the endpoints verify — so only logged-in ComCal users can send.
  *
  * Never throws — a failed notification must never block or
  * break a leave request action.
  * ─────────────────────────────────────────────────────────────
  */
 
-export async function sendEmail({ to, subject, html }) {
+import { supabase } from './supabase'
+
+async function authedPost(path, body) {
   try {
-    const res = await fetch('/api/send-email', {
+    const { data: { session } } = await supabase.auth.getSession()
+    if (!session?.access_token) {
+      console.warn('No session — notification skipped')
+      return
+    }
+    const res = await fetch(path, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ to, subject, html }),
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${session.access_token}`,
+      },
+      body: JSON.stringify(body),
     })
     if (!res.ok) {
-      const body = await res.text().catch(() => '')
-      console.warn('Email notification failed:', res.status, body)
+      const text = await res.text().catch(() => '')
+      console.warn('Notification failed:', res.status, text)
     }
   } catch (e) {
-    console.warn('Email notification failed:', e)
+    console.warn('Notification failed:', e)
   }
+}
+
+/** Notify all admins/managers of a new leave request.
+ *  Recipient emails are looked up server-side — never exposed here. */
+export function notifyApprovers({ typeName, when, amount, reason, conflict }) {
+  return authedPost('/api/notify-request', { typeName, when, amount, reason, conflict })
+}
+
+/** Send a specific email (used by the admin panel for outcome emails). */
+export function sendEmail({ to, subject, html }) {
+  return authedPost('/api/send-email', { to, subject, html })
 }
 
 /** Simple branded wrapper so all ComCal emails look consistent. */
