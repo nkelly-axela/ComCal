@@ -1091,17 +1091,28 @@ export default function LeaveAdminPanel() {
                   <div style={{ fontSize: 13, color: '#6b7280', marginTop: 2 }}>Review and approve or reject employee requests</div>
                 </div>
                 <div style={{ display: 'flex', gap: 4, padding: 3, background: '#f3f4f6', borderRadius: 8 }}>
-                  {['pending','approved','rejected','all'].map(f => (
-                    <button key={f} onClick={() => setReqFilter(f)} style={{
-                      fontSize: 12, padding: '0.3rem 0.7rem', border: 'none', cursor: 'pointer',
-                      background: reqFilter === f ? '#fff' : 'transparent',
-                      borderRadius: 6, fontFamily: 'inherit',
-                      color: reqFilter === f ? '#111' : '#6b7280',
-                      fontWeight: reqFilter === f ? 500 : 400,
-                      boxShadow: reqFilter === f ? '0 1px 2px rgba(0,0,0,0.06)' : 'none',
-                      textTransform: 'capitalize',
-                    }}>{f}</button>
-                  ))}
+                  {[
+                    { value: 'pending',              label: 'Pending' },
+                    { value: 'cancellation_pending', label: 'Cancellations' },
+                    { value: 'approved',             label: 'Approved' },
+                    { value: 'rejected',             label: 'Rejected' },
+                    { value: 'all',                  label: 'All' },
+                  ].map(f => {
+                    const count = (f.value === 'pending' || f.value === 'cancellation_pending')
+                      ? requests.filter(r => r.status === f.value).length
+                      : 0
+                    return (
+                      <button key={f.value} onClick={() => setReqFilter(f.value)} style={{
+                        fontSize: 12, padding: '0.3rem 0.7rem', border: 'none', cursor: 'pointer',
+                        background: reqFilter === f.value ? '#fff' : 'transparent',
+                        borderRadius: 6, fontFamily: 'inherit',
+                        color: reqFilter === f.value ? '#111' : '#6b7280',
+                        fontWeight: reqFilter === f.value ? 500 : 400,
+                        boxShadow: reqFilter === f.value ? '0 1px 2px rgba(0,0,0,0.06)' : 'none',
+                        whiteSpace: 'nowrap',
+                      }}>{f.label}{count > 0 ? ` (${count})` : ''}</button>
+                    )
+                  })}
                 </div>
               </div>
 
@@ -2459,3 +2470,4 @@ Conflict detail: ${req.conflict_detail??'None'}`
     </div>
   )
 }
+
