@@ -46,6 +46,13 @@ export function notifyApprovers({ typeName, when, amount, reason, conflict }) {
   return authedPost('/api/notify-request', { typeName, when, amount, reason, conflict })
 }
 
+/** Notify all admins/managers that an employee has requested to CANCEL an
+ *  already-approved booking (status → cancellation_pending). Reuses the
+ *  notify-request endpoint with kind:'cancellation'. */
+export function notifyCancellation({ typeName, when, amount, reason }) {
+  return authedPost('/api/notify-request', { typeName, when, amount, reason, kind: 'cancellation' })
+}
+
 /** Send a specific email (used by the admin panel for outcome emails). */
 export function sendEmail({ to, subject, html }) {
   return authedPost('/api/send-email', { to, subject, html })
