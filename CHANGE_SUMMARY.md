@@ -54,16 +54,32 @@ Annual Leave 13/20, Nina 15/15.
 
 ---
 
-## 3. Prevention (migration — `migration_12_enforce_rollover_cap.sql`)
+## 3. Prevention (migrations — run once in the Supabase SQL editor)
 
-Installs the corrected `process_year_end_rollover` so future year-end runs honor:
+**`migration_12_enforce_rollover_cap.sql`** — corrected `process_year_end_rollover`
+so future year-end runs honor:
 - **Max days** — `rolled = least(unused, rollover_max_days)` (hard cap).
 - **Expiry** — anchored to `holiday_year_start + rollover_expiry_months`, not 1 Jan.
 - **Eligibility / enable** — only `rollover_eligible` leave types; aborts if
   `rollover_enabled` is off.
 
-Idempotent; no `UPDATE`/`DELETE` on `leave_allowances`, so it does **not** affect
-existing/this-year data — it only changes what future rollover runs create.
+**`migration_13_rollover_cap_guard.sql`** — a `BEFORE INSERT/UPDATE` trigger that
+clamps any rollover row's `total_days` to `rollover_max_days`. Database-level
+backstop: no code path can ever leave a rollover row above the admin cap again.
+
+**`migration_14_fix_adjust_allowance.sql`** — fixes the admin "Adjust" action. It
+previously updated `total_days` for every row matching (user, type, year),
+including the rollover row, so adjusting a standard allowance re-inflated rollover.
+Now it (a) updates only the standard row, and (b) refuses to set a total below days
+already used. Also writes an `adjusted` audit entry.
+
+All three are idempotent. None run `UPDATE`/`DELETE` against existing balances
+(the trigger only clamps future writes), so they do **not** alter this-year data —
+they only change behaviour going forward.
+
+## 4. Ad-hoc data change
+**`marija_grant_extra_day.sql`** — grants Marija Tropa one extra Annual Leave day
+for 2026 only (standard total 20 → 21 → 14 remaining); rollover untouched.
 
 ---
 
