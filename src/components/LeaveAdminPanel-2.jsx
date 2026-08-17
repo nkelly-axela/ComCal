@@ -209,6 +209,7 @@ export default function LeaveAdminPanel() {
   const [alModal, setAlModal] = useState(false)
   const [alEditing, setAlEditing] = useState(null)
   const [alForm, setAlForm] = useState({ userId: '', typeId: '', year: currentYear, total: '', note: '' })
+  const [rolloverModal, setRolloverModal] = useState(null) // admin: view an employee's rollover detail
   const [employees, setEmployees] = useState([])
 
   const [requests, setRequests] = useState([])
@@ -1972,7 +1973,12 @@ export default function LeaveAdminPanel() {
                   const term = alSearch.trim().toLowerCase()
                   if (!term) return true
                   return (a.full_name || '').toLowerCase().includes(term) || (a.email || '').toLowerCase().includes(term)
-                }).map(a => (
+                }).map(a => {
+                  // Rollover rows for the same person/type/year (system-managed).
+                  const rollovers = allowances.filter(r =>
+                    r.user_id === a.user_id && r.leave_type_id === a.leave_type_id &&
+                    r.year === a.year && r.notes && r.notes.includes('Rollover from'))
+                  return (
                   <TR key={a.id}>
                     <TD>
                       <div style={{ fontWeight: 500 }}>{a.full_name}</div>
@@ -1993,6 +1999,9 @@ export default function LeaveAdminPanel() {
                           setAlForm({ userId: a.user_id, typeId: a.leave_type_id, year: a.year, total: a.total_days, note: '' })
                           setAlModal(true)
                         }}>Adjust</Btn>
+                        {rollovers.length > 0 && (
+                          <Btn size="sm" onClick={() => setRolloverModal(a)}>↩ Rollover</Btn>
+                        )}
                         <Btn size="sm" variant="danger" onClick={async () => {
                           const { error } = await supabase.from('leave_allowances').delete().eq('id', a.id)
                           if (error) { showToast(error.message, 'error'); return }
@@ -2002,7 +2011,8 @@ export default function LeaveAdminPanel() {
                       </div>
                     </TD>
                   </TR>
-                ))}
+                  )
+                })}
               </Table>
             </div>
           )}
@@ -2089,6 +2099,54 @@ export default function LeaveAdminPanel() {
           <Btn size="sm" onClick={() => setAlModal(false)}>Cancel</Btn>
           <Btn size="sm" variant="primary" onClick={saveAllowance}>Save allowance</Btn>
         </div>
+      </Modal>
+
+      {/* ── Rollover detail (admin, read-only) ── */}
+      <Modal open={!!rolloverModal} onClose={() => setRolloverModal(null)} title="Rollover balance">
+        {rolloverModal && (() => {
+          const rows = allowances.filter(r =>
+            r.user_id === rolloverModal.user_id && r.leave_type_id === rolloverModal.leave_type_id &&
+            r.year === rolloverModal.year && r.notes && r.notes.includes('Rollover from'))
+          return (
+            <div>
+              <div style={{ fontSize: 13, color: '#374151', marginBottom: 12 }}>
+                <strong>{rolloverModal.full_name}</strong> · {rolloverModal.leave_type} · holiday year {rolloverModal.year}
+              </div>
+              {rows.length === 0
+                ? <div style={{ color: '#9ca3af', fontSize: 13 }}>No rollover for this holiday year.</div>
+                : rows.map(r => {
+                    const remaining = r.total_days - r.used_days
+                    const expired = r.expiry_date && new Date(r.expiry_date) < new Date()
+                    return (
+                      <div key={r.id} style={{ border: '0.5px solid #e5e7eb', borderRadius: 10, padding: '0.9rem', marginBottom: 8, background: expired ? '#FFF5F5' : '#f9fafb' }}>
+                        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+                          <span style={{ fontSize: 12, color: '#6b7280' }}>{r.notes}</span>
+                          <span style={{ fontSize: 10, fontWeight: 500, padding: '2px 7px', borderRadius: 10, background: expired ? '#FCEBEB' : '#E6F1FB', color: expired ? '#791F1F' : '#185FA5' }}>
+                            {expired ? '⚠ Expired' : '↩ Active'}
+                          </span>
+                        </div>
+                        <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr', gap: 8, textAlign: 'center' }}>
+                          <div><div style={{ fontSize: 20, fontWeight: 600 }}>{r.total_days}</div><div style={{ fontSize: 11, color: '#6b7280' }}>Rollover</div></div>
+                          <div><div style={{ fontSize: 20, fontWeight: 600 }}>{r.used_days}</div><div style={{ fontSize: 11, color: '#6b7280' }}>Used</div></div>
+                          <div><div style={{ fontSize: 20, fontWeight: 600, color: remaining <= 0 ? '#991b1b' : '#111' }}>{remaining}</div><div style={{ fontSize: 11, color: '#6b7280' }}>Left</div></div>
+                        </div>
+                        {r.expiry_date && (
+                          <div style={{ fontSize: 11, color: expired ? '#991b1b' : '#854F0B', marginTop: 10 }}>
+                            {expired ? 'Expired' : 'Expires'} {new Date(r.expiry_date).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' })}
+                          </div>
+                        )}
+                      </div>
+                    )
+                  })}
+              <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 4 }}>
+                Rollover is system-managed by the year-end run and can't be edited here.
+              </div>
+              <div style={{ display: 'flex', justifyContent: 'flex-end', borderTop: '0.5px solid #e5e7eb', paddingTop: '1rem', marginTop: 12 }}>
+                <Btn size="sm" onClick={() => setRolloverModal(null)}>Close</Btn>
+              </div>
+            </div>
+          )
+        })()}
       </Modal>
 
       {/* ── Approve / Reject / Cancellation modal ── */}
