@@ -35,10 +35,13 @@ export default async function handler(req, res) {
   if (!userRes.ok) return res.status(401).json({ error: 'Invalid session' });
   const authUser = await userRes.json();
 
-  const { typeName, when, amount, reason, conflict } = req.body || {};
+  const { typeName, when, amount, reason, conflict, kind } = req.body || {};
   if (!typeName || !when || !amount) {
     return res.status(400).json({ error: 'Missing request details' });
   }
+
+  // 'cancellation' = employee wants to cancel an already-approved booking.
+  const isCancellation = kind === 'cancellation';
 
   try {
     const svcHeaders = {
@@ -70,6 +73,13 @@ export default async function handler(req, res) {
       <td style="padding:8px 14px;font-size:13px;color:#111827;font-weight:500;">${v}</td>
     </tr>`;
 
+    // Vary the copy for cancellation vs. new-request notifications.
+    const heading   = isCancellation ? 'Cancellation requested' : 'New leave request';
+    const badgeText = isCancellation ? 'Cancellation requested' : 'Pending review';
+    const intro     = isCancellation
+      ? `<strong>${esc(fullName)}</strong> has requested to <strong>cancel</strong> this approved leave:`
+      : `<strong>${esc(fullName)}</strong> has submitted a leave request:`;
+
     const html = `<!DOCTYPE html>
 <html>
 <body style="margin:0;padding:0;background:#f5f5f4;">
@@ -85,15 +95,15 @@ export default async function handler(req, res) {
           </td>
         </tr>
         <tr><td style="height:28px;line-height:28px;font-size:0;">&nbsp;</td></tr>
-        <tr><td style="padding:0 32px;font-size:18px;font-weight:600;color:#111827;">New leave request</td></tr>
+        <tr><td style="padding:0 32px;font-size:18px;font-weight:600;color:#111827;">${heading}</td></tr>
         <tr><td style="height:12px;line-height:12px;font-size:0;">&nbsp;</td></tr>
         <tr><td style="padding:0 32px;">
-          <span style="display:inline-block;font-size:12px;font-weight:600;letter-spacing:.3px;text-transform:uppercase;padding:4px 12px;border-radius:999px;background:#FAEEDA;color:#854F0B;">Pending review</span>
+          <span style="display:inline-block;font-size:12px;font-weight:600;letter-spacing:.3px;text-transform:uppercase;padding:4px 12px;border-radius:999px;background:#FAEEDA;color:#854F0B;">${badgeText}</span>
         </td></tr>
         <tr><td style="height:14px;line-height:14px;font-size:0;">&nbsp;</td></tr>
         <tr>
           <td style="padding:0 32px;font-size:14px;color:#374151;line-height:1.65;">
-            <p style="margin:0 0 14px;"><strong>${esc(fullName)}</strong> has submitted a leave request:</p>
+            <p style="margin:0 0 14px;">${intro}</p>
             <table role="presentation" width="100%" cellpadding="0" cellspacing="0" style="background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;">
               ${row('Type', esc(typeName))}
               ${row('When', esc(when))}
@@ -130,7 +140,9 @@ export default async function handler(req, res) {
       body: JSON.stringify({
         from: 'ComCal <noreply@axelainnovations.co.uk>',
         to: emails,
-        subject: `New leave request from ${fullName}`,
+        subject: isCancellation
+          ? `Cancellation request from ${fullName}`
+          : `New leave request from ${fullName}`,
         html,
       }),
     });
