@@ -52,7 +52,10 @@ const STATUS_VARIANTS = {
 // ═══════════════════════════════════════════════════════════════
 
 export default function LeaveUserPanel({ userId, fullName }) {
-  const currentYear = new Date().getFullYear()
+  // Note: the holiday year is defined solely by the admin `holiday_year_start`
+  // setting (resolved via the get_holiday_year_dates RPC below). We deliberately
+  // do NOT derive it from new Date().getFullYear() — the calendar year is not the
+  // holiday year for any company whose holiday year doesn't start on 1 January.
   const rootRef = useRef(null)
 
   const [balances,   setBalances]   = useState([])
@@ -81,28 +84,43 @@ export default function LeaveUserPanel({ userId, fullName }) {
 
   const loadHolidayYear = useCallback(async () => {
     try {
-      const { data } = await supabase.rpc('get_holiday_year_dates')
+      const { data, error } = await supabase.rpc('get_holiday_year_dates')
+      if (error) throw error
       if (data?.[0]) {
         setHolidayYear(data[0].year_label)
         setHolidayYearStart(data[0].year_start)
         setHolidayYearEnd(data[0].year_end)
+      } else {
+        showToast('Holiday year is not configured. Ask an admin to set the holiday year start.', 'error')
       }
-    } catch {
-      setHolidayYear(new Date().getFullYear())
+    } catch (e) {
+      // Do NOT fall back to the calendar year here. The holiday year must come
+      // from the admin holiday_year_start setting; silently using the calendar
+      // year would query the wrong year's allowances for any non-January
+      // holiday year and mis-report balances/rollover.
+      showToast('Could not load the holiday year setting.', 'error')
     }
   }, [])
   const loadBalances = useCallback(async () => {
-    const yr = holidayYear ?? currentYear
+    // Balances are keyed to the configured holiday-year label, never the
+    // calendar year. Wait until that label is known before querying.
+    if (holidayYear == null) return
+    // Everything for the current holiday year. The standard allowance
+    // (notes null) AND the active/expired rollover carried in from the
+    // previous year both carry year === holidayYear, so a single equality
+    // filter returns exactly the two buckets the dashboard should show. The
+    // old .or() clause additionally pulled year === holidayYear+1 rollover
+    // rows (next year's carryover), which surfaced spurious future cards.
     const { data, error } = await supabase
       .from('v_leave_balances')
       .select('*')
       .eq('user_id', userId)
-      .or(`year.eq.${yr},and(year.eq.${yr + 1},notes.like.Rollover from ${yr}*)`)
+      .eq('year', holidayYear)
       .order('notes', { nullsFirst: true })
       .order('leave_type', { ascending: true })
     if (error) showToast(error.message, 'error')
     else setBalances(data ?? [])
-  }, [userId, holidayYear, currentYear])
+  }, [userId, holidayYear])
 
   const loadRequests = useCallback(async () => {
     const { data, error } = await supabase
@@ -122,13 +140,23 @@ export default function LeaveUserPanel({ userId, fullName }) {
     else setLeaveTypes(data ?? [])
   }, [])
 
+  // Resolve the holiday year first, plus the data that doesn't depend on it.
+  // Balances are loaded separately (below) once the holiday-year label is known,
+  // so we never query them against the calendar year.
   useEffect(() => {
     let cancelled = false
-    Promise.all([loadHolidayYear(), loadBalances(), loadRequests(), loadLeaveTypes()]).finally(() => {
+    Promise.all([loadHolidayYear(), loadRequests(), loadLeaveTypes()]).finally(() => {
       if (!cancelled) setLoading(false)
     })
     return () => { cancelled = true }
-  }, [loadHolidayYear, loadBalances, loadRequests, loadLeaveTypes])
+  }, [loadHolidayYear, loadRequests, loadLeaveTypes])
+
+  // Load balances only once the holiday-year label is known, and reload if it
+  // changes. loadBalances early-returns while holidayYear is null.
+  useEffect(() => {
+    if (holidayYear == null) return
+    loadBalances()
+  }, [holidayYear, loadBalances])
 
   // ── Conflict detection — runs when dates change in modal ──────
   const checkConflicts = useCallback(async (start, end) => {
@@ -359,7 +387,7 @@ export default function LeaveUserPanel({ userId, fullName }) {
             <div style={{ fontSize:13, color:'#6b7280', marginTop:2 }}>
               {holidayYearStart && holidayYearEnd
                 ? `Holiday year: ${new Date(holidayYearStart).toLocaleDateString('en-GB', { day:'numeric', month:'short', year:'numeric' })} – ${new Date(holidayYearEnd).toLocaleDateString('en-GB', { day:'numeric', month:'short', year:'numeric' })}`
-                : `Your leave for ${currentYear}`}
+                : 'Loading holiday year…'}
             </div>
           </div>
           <Btn variant="primary" size="sm" onClick={() => {
@@ -371,11 +399,11 @@ export default function LeaveUserPanel({ userId, fullName }) {
 
         {/* Balance cards */}
         <div style={{ display:'grid', gridTemplateColumns:'repeat(auto-fill,minmax(220px,1fr))', gap:12, marginBottom:'1.75rem' }}>
-          {loading
+          {loading || holidayYear == null
             ? <div style={{ color:'#9ca3af', fontSize:13 }}>Loading balances…</div>
             : balances.length === 0
               ? <div style={{ color:'#9ca3af', fontSize:13 }}>No allowances seeded for this holiday year yet. Ask an admin to run the seed.</div>
-              : balances.map(b => <BalanceCard key={`${b.leave_type_id}-${b.year}`} b={b} />)}
+              : balances.map(b => <BalanceCard key={b.id ?? `${b.leave_type_id}-${b.year}-${b.notes ?? 'std'}`} b={b} />)}
         </div>
 
         {/* Requests table */}
