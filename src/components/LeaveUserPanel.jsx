@@ -19,7 +19,7 @@
 
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { supabase } from '../lib/supabase'
-import { notifyApprovers } from '../lib/notify'
+import { notifyApprovers, notifyCancellation } from '../lib/notify'
 
 // ─── Helpers ──────────────────────────────────────────────────
 
@@ -274,12 +274,23 @@ export default function LeaveUserPanel({ userId, fullName }) {
     await Promise.all([loadRequests(), loadBalances()])
   }
 
-  const requestCancellation = async (id) => {
+  const requestCancellation = async (r) => {
     if (!window.confirm('Request cancellation of this approved leave? Your manager will need to approve the cancellation.')) return
     const { error } = await supabase
       .from('leave_requests').update({ status:'cancellation_pending' })
-      .eq('id', id).eq('user_id', userId).eq('status', 'approved')
+      .eq('id', r.id).eq('user_id', userId).eq('status', 'approved')
     if (error) { showToast(error.message, 'error'); return }
+    // Notify approvers that a cancellation is awaiting them.
+    notifyCancellation({
+      typeName: r.leave_types?.name ?? 'Leave',
+      when: r.hours_requested || r.start_date === r.end_date
+        ? fmtDate(r.start_date)
+        : `${fmtDate(r.start_date)} – ${fmtDate(r.end_date)}`,
+      amount: r.hours_requested
+        ? `${r.hours_requested} hour${r.hours_requested === 1 ? '' : 's'}`
+        : `${r.days_requested} working day${r.days_requested === 1 ? '' : 's'}`,
+      reason: r.reason || null,
+    })
     showToast('Cancellation request sent to your manager')
     await Promise.all([loadRequests(), loadBalances()])
   }
@@ -443,7 +454,7 @@ export default function LeaveUserPanel({ userId, fullName }) {
                       <Btn size="sm" variant="danger" onClick={() => cancelRequest(r.id)}>Cancel</Btn>
                     )}
                     {r.status === 'approved' && (
-                      <Btn size="sm" variant="danger" onClick={() => requestCancellation(r.id)}>Request cancellation</Btn>
+                      <Btn size="sm" variant="danger" onClick={() => requestCancellation(r)}>Request cancellation</Btn>
                     )}
                     {r.status === 'cancellation_pending' && (
                       <span style={{ fontSize:11, color:'#854F0B', background:'#FAEEDA', padding:'2px 8px', borderRadius:8 }}>
