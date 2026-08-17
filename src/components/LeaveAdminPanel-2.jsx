@@ -205,6 +205,7 @@ export default function LeaveAdminPanel() {
 
   const [allowances, setAllowances] = useState([])
   const [alYear, setAlYear] = useState(currentYear) // updated to holidayYearLabel after load
+  const [alSearch, setAlSearch] = useState('') // employee search (name/email)
   const [alModal, setAlModal] = useState(false)
   const [alEditing, setAlEditing] = useState(null)
   const [alForm, setAlForm] = useState({ userId: '', typeId: '', year: currentYear, total: '', note: '' })
@@ -220,6 +221,7 @@ export default function LeaveAdminPanel() {
   const [auditPage,    setAuditPage]    = useState(1)
   const [auditTotal,   setAuditTotal]   = useState(0)
   const [auditFilter,  setAuditFilter]  = useState('all')
+  const [auditSearch,  setAuditSearch]  = useState('') // employee search (name/email)
   const AUDIT_PAGE_SIZE = 50
 
   const [empList, setEmpList] = useState([])
@@ -301,27 +303,50 @@ export default function LeaveAdminPanel() {
     }
   }, [])
 
-  const loadAuditLog = useCallback(async (page = 1, filter = 'all') => {
+  const loadAuditLog = useCallback(async (page = 1, filter = 'all', employeeIds = null) => {
     setAuditLoading(true)
     try {
       const from = (page - 1) * AUDIT_PAGE_SIZE
       const to   = from + AUDIT_PAGE_SIZE - 1
+
+      // When searching by employee we restrict to entries tied to that
+      // person's leave requests. Approve/reject/adjust entries link to an
+      // employee only via leave_requests, so we inner-join it and match on
+      // its owner (leave_requests.user_id). Entries with no request (e.g.
+      // system seeds) don't belong to a single employee and are excluded
+      // from a targeted search by design.
+      const searching = Array.isArray(employeeIds)
+      if (searching && employeeIds.length === 0) {
+        // Search term matched no employees — show an empty result set.
+        setAuditLog([])
+        setAuditTotal(0)
+        return
+      }
+
+      const reqEmbed = searching
+        ? `leave_requests!inner (
+            start_date, end_date, days_requested, hours_requested, user_id,
+            user:users!leave_requests_user_id_fkey ( full_name ),
+            leave_types ( name, color )
+          )`
+        : `leave_requests (
+            start_date, end_date, days_requested, hours_requested,
+            user:users!leave_requests_user_id_fkey ( full_name ),
+            leave_types ( name, color )
+          )`
 
       let query = supabase
         .from('leave_audit_log')
         .select(`
           id, action, note, created_at, performed_by_name,
           leave_request_id,
-          leave_requests (
-            start_date, end_date, days_requested, hours_requested,
-            user:users!leave_requests_user_id_fkey ( full_name ),
-            leave_types ( name, color )
-          )
+          ${reqEmbed}
         `, { count: 'exact' })
         .order('created_at', { ascending: false })
         .range(from, to)
 
       if (filter !== 'all') query = query.eq('action', filter)
+      if (searching) query = query.in('leave_requests.user_id', employeeIds)
 
       const { data, error, count } = await query
       if (error) throw error
@@ -833,7 +858,7 @@ export default function LeaveAdminPanel() {
     loadAllowances(alYear)
     loadEmployees()
     loadRequests()
-    loadAuditLog()
+    // Initial audit-log load is handled by the dedicated page/filter/search effect below.
     loadEmpList()
     loadPublicHolidays()
     loadPendingInvites()
@@ -844,10 +869,26 @@ export default function LeaveAdminPanel() {
     loadAllowances(alYear)
   }, [alYear, loadAllowances])
 
-  // Reload audit log when page or filter changes
+  // Reload audit log when page, action filter, or employee search changes.
+  // The employee search is resolved client-side against the already-loaded
+  // employee list (name/email) into a set of user ids, then applied
+  // server-side so pagination and totals stay correct. Debounced so typing
+  // doesn't fire a request per keystroke.
   useEffect(() => {
-    loadAuditLog(auditPage, auditFilter)
-  }, [auditPage, auditFilter, loadAuditLog])
+    const run = () => {
+      const term = auditSearch.trim().toLowerCase()
+      const employeeIds = term
+        ? empList
+            .filter(e =>
+              (e.full_name || '').toLowerCase().includes(term) ||
+              (e.email || '').toLowerCase().includes(term))
+            .map(e => e.id)
+        : null
+      loadAuditLog(auditPage, auditFilter, employeeIds)
+    }
+    const t = setTimeout(run, auditSearch.trim() ? 300 : 0)
+    return () => clearTimeout(t)
+  }, [auditPage, auditFilter, auditSearch, empList, loadAuditLog])
 
   const saveLeaveType = async () => {
     if (!ltForm.name.trim()) return
@@ -1221,6 +1262,21 @@ export default function LeaveAdminPanel() {
                   </div>
                 </div>
                 <div style={{ display:'flex', gap:8, alignItems:'center' }}>
+                  <div style={{ position:'relative' }}>
+                    <input
+                      value={auditSearch}
+                      onChange={e => { setAuditSearch(e.target.value); setAuditPage(1) }}
+                      placeholder="Search employee…"
+                      style={{ fontSize:12, padding:'0.4rem 1.6rem 0.4rem 0.65rem', border:'0.5px solid #e5e7eb', borderRadius:8, fontFamily:'inherit', width:180 }}
+                    />
+                    {auditSearch && (
+                      <button
+                        onClick={() => { setAuditSearch(''); setAuditPage(1) }}
+                        title="Clear search"
+                        style={{ position:'absolute', right:6, top:'50%', transform:'translateY(-50%)', border:'none', background:'transparent', cursor:'pointer', color:'#9ca3af', fontSize:14, lineHeight:1, padding:0 }}
+                      >×</button>
+                    )}
+                  </div>
                   <select
                     value={auditFilter}
                     onChange={e => { setAuditFilter(e.target.value); setAuditPage(1) }}
@@ -1884,6 +1940,21 @@ export default function LeaveAdminPanel() {
                   <div style={{ fontSize: 13, color: '#6b7280', marginTop: 2 }}>Per-person leave balance for the selected year</div>
                 </div>
                 <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                  <div style={{ position:'relative' }}>
+                    <input
+                      value={alSearch}
+                      onChange={e => setAlSearch(e.target.value)}
+                      placeholder="Search employee…"
+                      style={{ ...selectStyle, width: 180, padding:'0.4rem 1.6rem 0.4rem 0.65rem' }}
+                    />
+                    {alSearch && (
+                      <button
+                        onClick={() => setAlSearch('')}
+                        title="Clear search"
+                        style={{ position:'absolute', right:6, top:'50%', transform:'translateY(-50%)', border:'none', background:'transparent', cursor:'pointer', color:'#9ca3af', fontSize:14, lineHeight:1, padding:0 }}
+                      >×</button>
+                    )}
+                  </div>
                   <select value={alYear} onChange={e => setAlYear(+e.target.value)} style={{ ...selectStyle, width: 'auto', padding: '0.4rem 0.65rem' }}>
                     {[holidayYearLabel - 1, holidayYearLabel, holidayYearLabel + 1].map(y => <option key={y} value={y}>Holiday year {y}</option>)}
                   </select>
@@ -1895,8 +1966,13 @@ export default function LeaveAdminPanel() {
                 </div>
               </div>
 
-              <Table headers={['Employee', 'Leave type', 'Total', 'Used', 'Remaining', 'Actions']} empty={`No allowances seeded for holiday year ${alYear}. Use Admin → Overview → Seed allowances.`}>
-                {allowances.filter(a => a.year === alYear && (!a.notes || !a.notes.includes('Rollover from'))).map(a => (
+              <Table headers={['Employee', 'Leave type', 'Total', 'Used', 'Remaining', 'Actions']} empty={alSearch.trim() ? `No allowances match "${alSearch.trim()}" for holiday year ${alYear}.` : `No allowances seeded for holiday year ${alYear}. Use Admin → Overview → Seed allowances.`}>
+                {allowances.filter(a => {
+                  if (a.year !== alYear || (a.notes && a.notes.includes('Rollover from'))) return false
+                  const term = alSearch.trim().toLowerCase()
+                  if (!term) return true
+                  return (a.full_name || '').toLowerCase().includes(term) || (a.email || '').toLowerCase().includes(term)
+                }).map(a => (
                   <TR key={a.id}>
                     <TD>
                       <div style={{ fontWeight: 500 }}>{a.full_name}</div>
