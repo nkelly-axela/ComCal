@@ -117,7 +117,7 @@ That's it. There are no Vercel serverless functions in this project — it's a p
 Password resets and invites use a **6-digit code** sent by email, not a link. Links get opened (and used up) by email security scanners such as Outlook Safe Links before the person clicks them. A code can't be used up that way, and it also works when the email is read on a phone but ComCal is open on a desktop.
 
 - **Forgot password?** Enter your email → get a code → enter the code plus your new password (twice, at least 8 characters) → signed in.
-- **Have an invite code?** For new starters invited from the Supabase dashboard. Enter your email, the code from the invite and a password. If the invite has expired, the screen offers to send a normal reset code instead.
+- **Have an invite code?** For new starters added in **Admin → Add user**, which emails them a code. They enter their email, the code and a password. They can request a new code from the same screen, and admins can use **Resend code** in the Pending invites list.
 
 **Supabase setup (one-off):**
 
@@ -132,15 +132,16 @@ Password resets and invites use a **6-digit code** sent by email, not a link. Li
    <p>If you didn't ask for this, you can ignore this email.</p>
    ```
 
-3. **Authentication → Email Templates → Invite user**: same idea, e.g.
+3. **Authentication → Email Templates → Magic Link** *and* **Confirm signup**: Admin → Add user sends one of these (Confirm signup the first time, Magic Link for resends). Put the code in both, e.g.
 
    ```html
    <h2>You've been invited to ComCal</h2>
-   <p>Go to {{ .SiteURL }}, click "Have an invite code?" and enter:</p>
+   <p>Your invite code is:</p>
    <p style="font-size:24px;font-weight:bold;letter-spacing:4px">{{ .Token }}</p>
+   <p>Go to {{ .SiteURL }}, click "Have an invite code?" and enter your email, this code and a password of your choice.</p>
    ```
 
-Remove `{{ .ConfirmationURL }}` from both templates. If it's left in, clicking it signs the person in without setting a password.
+Remove `{{ .ConfirmationURL }}` from all three templates. If it's left in, clicking it signs the person in without setting a password.
 
 ## Roles
 
