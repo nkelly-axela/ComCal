@@ -143,6 +143,19 @@ Password resets and invites use a **6-digit code** sent by email, not a link. Li
 
 Remove `{{ .ConfirmationURL }}` from all three templates. If it's left in, clicking it signs the person in without setting a password.
 
+## Deleting users
+
+Admins (not managers) can delete a user from **Admin → Employees → Delete**. It's a soft delete, so no history is lost:
+
+- **Removed from:** the Employees list, manager dropdowns, Allowances and the team calendar.
+- **Blocked:** they can't sign in, request a reset or invite code, or receive ComCal emails. (Their Supabase auth account is banned and its email replaced with a dead address; their real email stays on `public.users`.)
+- **Tidied up:** pending requests and booked leave that hasn't started yet are cancelled, and any pending invite is removed.
+- **Kept:** past leave, reports and the audit log.
+
+Handled by `api/delete-user.js` (uses `SUPABASE_SERVICE_ROLE_KEY`). Requires `db/migration_15_delete_users.sql` — run it in the Supabase SQL editor **before** deploying the code.
+
+To undo a delete, in Supabase: set `deleted_at` back to null on the user's `public.users` row, then in **Authentication → Users** unban them and change their email back.
+
 ## Roles
 
 The app reads `public.users.role` and routes the UI accordingly:
