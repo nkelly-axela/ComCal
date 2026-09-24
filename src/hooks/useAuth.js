@@ -7,7 +7,9 @@ async function fetchProfile(uid) {
   // Run as authenticated user — session must be set before calling this
   const { data, error } = await supabase
     .from('users')
-    .select('id, full_name, role, department, company')
+    // '*' rather than a column list so this keeps working if deleted_at
+    // (migration_15) hasn't been added yet.
+    .select('*')
     .eq('id', uid)
     .maybeSingle()
 
@@ -41,6 +43,18 @@ export function useAuth() {
     try {
       const prof = await withTimeout(fetchProfile(uid), AUTH_TIMEOUT_MS, 'fetchProfile')
       if (requestId !== profileRequestRef.current) return
+
+      // Deleted users (Admin → Employees → Delete) are banned in Supabase,
+      // but a session that was open at the time can live for up to an
+      // hour — end it now.
+      if (prof?.deleted_at) {
+        profileRequestRef.current++
+        setUser(null)
+        setProfile(null)
+        setLoading(false)
+        await supabase.auth.signOut().catch(() => {})
+        return
+      }
 
       setProfile(prof)
     } catch (err) {
