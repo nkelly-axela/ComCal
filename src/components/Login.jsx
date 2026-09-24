@@ -5,8 +5,9 @@
  *
  * Behaviour:
  *   - Sign in with existing credentials.
- *   - "Forgot password" link sends a reset email via
- *     supabase.auth.resetPasswordForEmail.
+ *   - "Forgot password?" and "Have an invite code?" hand off to
+ *     ResetPassword.jsx (via App.jsx), where the user enters the
+ *     6-digit code from their email and chooses a new password.
  *
  * Note on accounts: this screen does NOT include a sign-up form.
  * The expectation is that admins create users either through the
@@ -19,17 +20,15 @@
 import { useState } from 'react'
 import { supabase } from '../lib/supabase'
 
-export default function Login() {
+export default function Login({ onResetPassword }) {
   const [email, setEmail] = useState('')
   const [password, setPassword] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState(null)
-  const [info, setInfo] = useState(null)
 
   const onSignIn = async (e) => {
     e.preventDefault()
     setError(null)
-    setInfo(null)
     setBusy(true)
     try {
       const { error } = await supabase.auth.signInWithPassword({ email, password })
@@ -37,27 +36,6 @@ export default function Login() {
       // useAuth in App.jsx will pick up the session via onAuthStateChange.
     } catch (err) {
       setError(err.message ?? 'Sign in failed')
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const onForgot = async () => {
-    setError(null)
-    setInfo(null)
-    if (!email) {
-      setError('Enter your email first, then click "Forgot password".')
-      return
-    }
-    setBusy(true)
-    try {
-      const { error } = await supabase.auth.resetPasswordForEmail(email, {
-        redirectTo: `${window.location.origin}/`,
-      })
-      if (error) throw error
-      setInfo(`Reset link sent to ${email}. Check your inbox.`)
-    } catch (err) {
-      setError(err.message ?? 'Could not send reset email')
     } finally {
       setBusy(false)
     }
@@ -98,9 +76,6 @@ export default function Login() {
         {error && (
           <div style={alertStyle('error')}>{error}</div>
         )}
-        {info && (
-          <div style={alertStyle('info')}>{info}</div>
-        )}
 
         <button type="submit" disabled={busy} style={primaryBtn(busy)}>
           {busy ? 'Signing in…' : 'Sign in'}
@@ -108,11 +83,20 @@ export default function Login() {
 
         <button
           type="button"
-          onClick={onForgot}
+          onClick={() => onResetPassword('recovery', email)}
           disabled={busy}
           style={linkBtn}
         >
           Forgot password?
+        </button>
+
+        <button
+          type="button"
+          onClick={() => onResetPassword('invite', email)}
+          disabled={busy}
+          style={{ ...linkBtn, marginTop: 0, color: '#6b7280' }}
+        >
+          Have an invite code?
         </button>
 
         <div style={{
@@ -127,8 +111,8 @@ export default function Login() {
   )
 }
 
-// ─── Local styles ─────────────────────────────────────────────
-const shell = {
+// ─── Styles (shared with ResetPassword.jsx) ──────────────────
+export const shell = {
   minHeight: '100vh',
   display: 'flex', alignItems: 'center', justifyContent: 'center',
   background: '#f5f5f4',
@@ -136,27 +120,27 @@ const shell = {
   padding: '1rem',
 }
 
-const card = {
+export const card = {
   background: '#fff', borderRadius: 12,
   border: '0.5px solid #e5e7eb', padding: '2rem',
   width: 360, maxWidth: '100%',
   boxShadow: '0 4px 24px rgba(0,0,0,0.06)',
 }
 
-const inputStyle = {
+export const inputStyle = {
   width: '100%', fontSize: 13, padding: '0.55rem 0.7rem',
   border: '0.5px solid #d1d5db', borderRadius: 8,
   fontFamily: 'inherit', outline: 'none', boxSizing: 'border-box',
 }
 
-const Field = ({ label, children }) => (
+export const Field = ({ label, children }) => (
   <div style={{ marginBottom: '0.85rem' }}>
     <label style={{ display: 'block', fontSize: 12, color: '#6b7280', marginBottom: 4 }}>{label}</label>
     {children}
   </div>
 )
 
-const alertStyle = (type) => ({
+export const alertStyle = (type) => ({
   padding: '0.55rem 0.75rem',
   borderRadius: 8,
   fontSize: 12,
@@ -166,7 +150,7 @@ const alertStyle = (type) => ({
   border: `0.5px solid ${type === 'error' ? '#fca5a5' : '#93c5fd'}`,
 })
 
-const primaryBtn = (busy) => ({
+export const primaryBtn = (busy) => ({
   width: '100%', padding: '0.6rem',
   background: '#1D9E75', color: '#fff',
   border: '0.5px solid #1D9E75', borderRadius: 8,
@@ -176,7 +160,7 @@ const primaryBtn = (busy) => ({
   marginTop: '0.25rem',
 })
 
-const linkBtn = {
+export const linkBtn = {
   width: '100%', padding: '0.5rem 0',
   background: 'transparent', border: 'none',
   color: '#1D9E75', fontSize: 12,
