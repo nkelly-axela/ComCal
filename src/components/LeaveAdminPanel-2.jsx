@@ -225,7 +225,12 @@ export default function LeaveAdminPanel() {
   const [auditSearch,  setAuditSearch]  = useState('') // employee search (name/email)
   const AUDIT_PAGE_SIZE = 50
 
-  const [empList, setEmpList] = useState([])
+  const [empList, setEmpList] = useState([]) // includes deleted users (audit log needs their names)
+  const activeEmps = empList.filter(e => !e.deleted_at)
+  const [myId, setMyId] = useState(null)
+  const isAdmin = empList.find(e => e.id === myId)?.role === 'admin' // managers can't delete users
+  const [deleteTarget, setDeleteTarget] = useState(null) // employee row awaiting confirmation
+  const [deleteBusy,   setDeleteBusy]   = useState(false)
   const [empModal, setEmpModal] = useState(false)
   const [empEditing, setEmpEditing] = useState(null)
   const [empForm, setEmpForm] = useState({ full_name: '', email: '', role: 'employee', company: '', department: '', manager_id: '' })
@@ -364,7 +369,7 @@ export default function LeaveAdminPanel() {
     try {
       const { data, error } = await supabase
         .from('users')
-        .select('id, full_name, email, role, company, department, manager_id')
+        .select('*') // includes deleted_at once migration_15 has run
         .order('full_name')
       if (error) throw error
       setEmpList(data ?? [])
@@ -626,6 +631,34 @@ export default function LeaveAdminPanel() {
     }
   }
 
+  // Soft-delete via api/delete-user.js (service role): hides them from
+  // Employees and the calendar, blocks sign-in / resets / emails, keeps
+  // their leave history and audit log.
+  const deleteUser = async () => {
+    if (!deleteTarget) return
+    setDeleteBusy(true)
+    try {
+      const { data: { session } } = await supabase.auth.getSession()
+      const res = await fetch('/api/delete-user', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${session?.access_token ?? ''}`,
+        },
+        body: JSON.stringify({ userId: deleteTarget.id }),
+      })
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok) throw new Error(body.error || `Delete failed (${res.status})`)
+      showToast(`${deleteTarget.full_name} deleted`)
+      setDeleteTarget(null)
+      await Promise.all([loadEmpList(), loadEmployees(), loadPendingInvites(), loadRequests()])
+    } catch (e) {
+      showToast(e.message, 'error')
+    } finally {
+      setDeleteBusy(false)
+    }
+  }
+
   const revokeInvite = async (id) => {
     if (!window.confirm('Revoke this invite?')) return
     const { error } = await supabase.from('invite_tokens').delete().eq('id', id)
@@ -837,7 +870,12 @@ export default function LeaveAdminPanel() {
         .or(`year.eq.${yr},and(year.eq.${yr + 1},notes.like.Rollover from ${yr}*)`)
         .order('full_name')
       if (error) throw error
-      setAllowances(data ?? [])
+      // Hide deleted users' balances (their rows stay in the database).
+      // Errors (e.g. before migration_15) just mean nothing is filtered.
+      const { data: deleted } = await supabase
+        .from('users').select('id').not('deleted_at', 'is', null)
+      const deletedIds = new Set((deleted ?? []).map(u => u.id))
+      setAllowances((data ?? []).filter(a => !deletedIds.has(a.user_id)))
     } catch (e) {
       showToast(e.message, 'error')
     }
@@ -847,10 +885,10 @@ export default function LeaveAdminPanel() {
     try {
       const { data, error } = await supabase
         .from('users')
-        .select('id, full_name, role')
+        .select('*')
         .order('full_name')
       if (error) throw error
-      setEmployees(data)
+      setEmployees((data ?? []).filter(e => !e.deleted_at))
     } catch (e) {
       showToast(e.message, 'error')
     }
@@ -868,6 +906,7 @@ export default function LeaveAdminPanel() {
     loadEmpList()
     loadPublicHolidays()
     loadPendingInvites()
+    supabase.auth.getUser().then(({ data }) => setMyId(data?.user?.id ?? null))
   }, [loadSettings, loadHolidayYear, loadLeaveTypes, loadEntitlements, loadAllowances, loadEmployees, loadRequests, loadAuditLog, loadEmpList, loadPublicHolidays, loadPendingInvites])
 
   // Reload allowances whenever the selected year changes
@@ -1200,7 +1239,7 @@ export default function LeaveAdminPanel() {
 
               {/* Active employees */}
               <Table headers={['Name', 'Email', 'Role', 'Department', 'Manager', 'Actions']} empty="No employees found">
-                {empList.map(e => {
+                {activeEmps.map(e => {
                   const mgr = empList.find(m => m.id === e.manager_id)
                   return (
                     <TR key={e.id}>
@@ -1225,6 +1264,9 @@ export default function LeaveAdminPanel() {
                             })
                             setEmpModal(true)
                           }}>Edit</Btn>
+                          {isAdmin && e.id !== myId && (
+                            <Btn size="sm" variant="danger" onClick={() => setDeleteTarget(e)}>Delete</Btn>
+                          )}
                         </div>
                       </TD>
                     </TR>
@@ -2279,7 +2321,7 @@ export default function LeaveAdminPanel() {
               <select style={selectStyle} value={addUserForm.manager_id}
                 onChange={e => setAddUserForm(f => ({ ...f, manager_id: e.target.value }))}>
                 <option value="">No manager assigned</option>
-                {empList.filter(e => e.role === 'manager' || e.role === 'admin').map(e => (
+                {activeEmps.filter(e => e.role === 'manager' || e.role === 'admin').map(e => (
                   <option key={e.id} value={e.id}>{e.full_name}</option>
                 ))}
               </select>
@@ -2288,6 +2330,32 @@ export default function LeaveAdminPanel() {
               <Btn size="sm" onClick={() => setAddUserModal(false)}>Cancel</Btn>
               <Btn size="sm" variant="primary" onClick={createUser} disabled={addUserBusy}>
                 {addUserBusy ? 'Creating…' : 'Create invite link'}
+              </Btn>
+            </div>
+          </div>
+        )}
+      </Modal>
+
+      {/* ── Delete user confirmation ── */}
+      <Modal open={!!deleteTarget} onClose={() => !deleteBusy && setDeleteTarget(null)} title="Delete user">
+        {deleteTarget && (
+          <div>
+            <div style={{ fontSize: 13, marginBottom: '0.75rem' }}>
+              Delete <strong>{deleteTarget.full_name}</strong> ({deleteTarget.email || 'no email'})?
+            </div>
+            <ul style={{ fontSize: 12, color: '#374151', lineHeight: 1.7, margin: '0 0 0.75rem', paddingLeft: '1.1rem' }}>
+              <li>They'll be removed from Employees and the team calendar.</li>
+              <li>They won't be able to sign in, reset their password or receive ComCal emails.</li>
+              <li>Pending requests and future booked leave will be cancelled.</li>
+              <li>Past leave, reports and the audit log are kept.</li>
+            </ul>
+            <div style={{ fontSize: 12, color: '#991b1b', background: '#fee2e2', border: '0.5px solid #fca5a5', borderRadius: 8, padding: '0.55rem 0.75rem', marginBottom: '1rem' }}>
+              This can't be undone from ComCal.
+            </div>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', borderTop: '0.5px solid #e5e7eb', paddingTop: '1rem' }}>
+              <Btn size="sm" onClick={() => setDeleteTarget(null)} disabled={deleteBusy}>Cancel</Btn>
+              <Btn size="sm" variant="danger" onClick={deleteUser} disabled={deleteBusy}>
+                {deleteBusy ? 'Deleting…' : 'Delete user'}
               </Btn>
             </div>
           </div>
@@ -2317,7 +2385,7 @@ export default function LeaveAdminPanel() {
         <Field label="Manager">
           <select style={selectStyle} value={empForm.manager_id} onChange={e => setEmpForm(f => ({ ...f, manager_id: e.target.value }))}>
             <option value="">No manager assigned</option>
-            {empList.filter(e => e.id !== empEditing && (e.role === 'manager' || e.role === 'admin')).map(e => (
+            {activeEmps.filter(e => e.id !== empEditing && (e.role === 'manager' || e.role === 'admin')).map(e => (
               <option key={e.id} value={e.id}>{e.full_name}</option>
             ))}
           </select>
