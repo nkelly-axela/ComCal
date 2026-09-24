@@ -7,16 +7,17 @@
  *   - 'recovery' (Login → "Forgot password?"): the user enters their
  *     email, we send a code via resetPasswordForEmail, then they enter
  *     the code plus a new password.
- *   - 'invite' (Login → "Have an invite code?"): the admin has already
- *     sent an invite from the Supabase dashboard, so we skip straight
- *     to entering email + code + password.
+ *   - 'invite' (Login → "Have an invite code?"): for new starters added
+ *     in Admin → Add user, which emails a code via signInWithOtp. We skip
+ *     straight to entering email + code + password.
  *
  * Codes, not links: email scanners (Outlook Safe Links) open links
  * before the user does and burn the one-time token. A code in the
  * email body can't be spent that way, and works across devices.
  *
  * Supabase setup (see README): Email OTP Length = 6, and the Reset
- * Password / Invite user templates must show {{ .Token }}.
+ * Password, Magic Link and Confirm signup templates must show
+ * {{ .Token }}.
  *
  * Rendered by App.jsx above the auth gate, because verifyOtp signs
  * the user in — we must stay on this screen until the new password
@@ -33,9 +34,8 @@ import {
 const CODE_LENGTH = 6
 const MIN_PASSWORD_LENGTH = 8
 
-export default function ResetPassword({ mode: initialMode, initialEmail = '', onDone, onCancel }) {
-  const [mode,     setMode]     = useState(initialMode)
-  const [step,     setStep]     = useState(initialMode === 'invite' ? 'code' : 'email')
+export default function ResetPassword({ mode, initialEmail = '', onDone, onCancel }) {
+  const [step,     setStep]     = useState(mode === 'invite' ? 'code' : 'email')
   const [email,    setEmail]    = useState(initialEmail)
   const [code,     setCode]     = useState('')
   const [password, setPassword] = useState('')
@@ -52,7 +52,14 @@ export default function ResetPassword({ mode: initialMode, initialEmail = '', on
     setInfo(null)
     setBusy(true)
     try {
-      const { error } = await supabase.auth.resetPasswordForEmail(email.trim())
+      // New starters get a fresh invite code; shouldCreateUser: false means
+      // this can't be used to create accounts the admin didn't add.
+      const { error } = isInvite
+        ? await supabase.auth.signInWithOtp({
+            email: email.trim(),
+            options: { shouldCreateUser: false },
+          })
+        : await supabase.auth.resetPasswordForEmail(email.trim())
       if (error) throw error
       setStep('code')
       setCode('')
@@ -67,16 +74,6 @@ export default function ResetPassword({ mode: initialMode, initialEmail = '', on
   const onSendCode = (e) => {
     e.preventDefault()
     sendCode()
-  }
-
-  // Invite codes can't be re-sent from the browser, but a reset code
-  // works just as well for setting a first password.
-  const switchToRecovery = () => {
-    setMode('recovery')
-    setStep('email')
-    setCode('')
-    setError(null)
-    setInfo(null)
   }
 
   const onSavePassword = async (e) => {
@@ -105,7 +102,9 @@ export default function ResetPassword({ mode: initialMode, initialEmail = '', on
         const { error } = await supabase.auth.verifyOtp({
           email: email.trim(),
           token: code,
-          type: isInvite ? 'invite' : 'recovery',
+          // Admin → Add user sends its code via signInWithOtp, which
+          // verifies as type 'email'.
+          type: isInvite ? 'email' : 'recovery',
         })
         if (error) throw error
         setVerified(true)
@@ -262,11 +261,11 @@ export default function ResetPassword({ mode: initialMode, initialEmail = '', on
         {!verified && (
           <button
             type="button"
-            onClick={isInvite ? switchToRecovery : sendCode}
-            disabled={busy}
+            onClick={sendCode}
+            disabled={busy || !email.trim()}
             style={linkBtn}
           >
-            {isInvite ? 'Invite expired? Get a new code' : 'Resend code'}
+            {isInvite ? 'Code expired? Send a new one' : 'Resend code'}
           </button>
         )}
 

@@ -600,9 +600,10 @@ export default function LeaveAdminPanel() {
         }, { onConflict: 'email' })
       if (tokenErr) throw tokenErr
 
-      // Step 2: Send a magic-link sign-in email via Supabase OTP
-      // This works even when public sign-ups are disabled —
-      // the user clicks the link and is signed straight in.
+      // Step 2: Email a 6-digit code via Supabase OTP (the Magic Link /
+      // Confirm signup templates show {{ .Token }}). Works even when public
+      // sign-ups are disabled. The new starter enters it under
+      // "Have an invite code?" on the sign-in page and sets a password.
       const { error: otpErr } = await supabase.auth.signInWithOtp({
         email,
         options: {
@@ -633,11 +634,15 @@ export default function LeaveAdminPanel() {
     await loadPendingInvites()
   }
 
-  const copyInviteLink = (link) => {
-    navigator.clipboard.writeText(link).then(
-      () => showToast('Link copied to clipboard'),
-      () => showToast('Could not copy — please copy manually', 'error')
-    )
+  // Emails a fresh 6-digit code to someone already added (the auth user
+  // exists from the original invite, so shouldCreateUser is off).
+  const resendInviteCode = async (email) => {
+    const { error } = await supabase.auth.signInWithOtp({
+      email,
+      options: { shouldCreateUser: false },
+    })
+    if (error) { showToast(error.message, 'error'); return }
+    showToast(`New code sent to ${email}`)
   }
 
   const loadSettings = useCallback(async () => {
@@ -1248,10 +1253,7 @@ export default function LeaveAdminPanel() {
                         </TD>
                         <TD>
                           <div style={{ display: 'flex', gap: 6 }}>
-                            <Btn size="sm" onClick={() => {
-                              const link = `${window.location.origin}/invite?token=${inv.token}`
-                              copyInviteLink(link)
-                            }}>Copy link</Btn>
+                            <Btn size="sm" onClick={() => resendInviteCode(inv.email)}>Resend code</Btn>
                             <Btn size="sm" variant="danger" onClick={() => revokeInvite(inv.id)}>Revoke</Btn>
                           </div>
                         </TD>
@@ -2217,12 +2219,13 @@ export default function LeaveAdminPanel() {
               Invite sent to {inviteLink.name}
             </div>
             <div style={{ fontSize:13, color:'#065f46', background:'#d1fae5', borderRadius:8, padding:'0.75rem', marginBottom:'1rem', border:'0.5px solid #6ee7b7', textAlign:'center' }}>
-              An email has been sent to <strong>{inviteLink.email}</strong> with a sign-in link.
+              An email has been sent to <strong>{inviteLink.email}</strong> with a 6-digit code.
             </div>
             <div style={{ fontSize:12, color:'#6b7280', marginBottom:'1rem', lineHeight:1.6 }}>
-              When they click the link in the email, their account will be automatically
-              configured with the role and department you set. The link expires in 24 hours.
-              If they don't receive it, check their spam folder or resend from this panel.
+              They should go to the sign-in page, click <strong>"Have an invite code?"</strong>,
+              and enter their email, the code and a password of their choice. Their account is
+              configured with the role and department you set. The code expires in 1 hour; they
+              can request a new one from the same screen. If it doesn't arrive, check their spam folder.
             </div>
             <div style={{ display:'flex', gap:8, justifyContent:'flex-end', borderTop:'0.5px solid #e5e7eb', paddingTop:'1rem' }}>
               <Btn size="sm" onClick={() => {
@@ -2236,8 +2239,9 @@ export default function LeaveAdminPanel() {
           /* Form state */
           <div>
             <div style={{ fontSize: 12, color: '#6b7280', background: '#f9fafb', borderRadius: 8, padding: '0.6rem 0.85rem', marginBottom: '1rem', border: '0.5px solid #e5e7eb', lineHeight: 1.6 }}>
-              Fill in the details below and an invite link will be generated.
-              Send it to the employee — when they sign up, their account will be automatically configured.
+              Fill in the details below and we'll email the employee a 6-digit code.
+              They enter it under "Have an invite code?" on the sign-in page to set their password —
+              their account is configured automatically.
             </div>
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
               <Field label="Full name *">
