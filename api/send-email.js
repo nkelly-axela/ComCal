@@ -36,6 +36,21 @@ export default async function handler(req, res) {
   }
 
   try {
+    // Never email deleted users (see api/delete-user.js).
+    const recipients = (Array.isArray(to) ? to : [to]).filter(Boolean);
+    const inList = recipients.map(e => `"${String(e).replace(/"/g, '')}"`).join(',');
+    const deletedRes = await fetch(
+      `${SUPABASE_URL}/rest/v1/users?email=in.(${encodeURIComponent(inList)})&deleted_at=not.is.null&select=email`,
+      { headers: { apikey: SERVICE_KEY, Authorization: `Bearer ${SERVICE_KEY}` } }
+    );
+    const deleted = new Set(
+      (deletedRes.ok ? await deletedRes.json() : []).map(u => String(u.email).toLowerCase())
+    );
+    const allowed = recipients.filter(e => !deleted.has(String(e).toLowerCase()));
+    if (!allowed.length) {
+      return res.status(200).json({ data: { sent: 0, skipped: 'recipient deleted' } });
+    }
+
     const response = await fetch('https://api.resend.com/emails', {
       method: 'POST',
       headers: {
@@ -44,7 +59,7 @@ export default async function handler(req, res) {
       },
       body: JSON.stringify({
         from: 'ComCal <noreply@axelainnovations.co.uk>',
-        to,
+        to: allowed,
         subject,
         html,
       }),

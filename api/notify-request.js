@@ -52,7 +52,7 @@ export default async function handler(req, res) {
     // ── 2. Look up requester name + approver emails privately ──
     const [nameRes, approverRes] = await Promise.all([
       fetch(`${SUPABASE_URL}/rest/v1/users?id=eq.${authUser.id}&select=full_name`, { headers: svcHeaders }),
-      fetch(`${SUPABASE_URL}/rest/v1/users?role=in.(admin,manager)&select=email`, { headers: svcHeaders }),
+      fetch(`${SUPABASE_URL}/rest/v1/users?role=in.(admin,manager)&deleted_at=is.null&select=email`, { headers: svcHeaders }),
     ]);
 
     const nameRows = nameRes.ok ? await nameRes.json() : [];
