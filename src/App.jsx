@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 import { useAuth } from './hooks/useAuth'
 import { supabase } from './lib/supabase'
 import Login from './components/Login'
+import ResetPassword from './components/ResetPassword'
 import LeaveUserPanel from './components/LeaveUserPanel'
 import LeaveAdminPanel from './components/LeaveAdminPanel-2'
 import LeaveCalendar from './components/LeaveCalendar'
@@ -10,6 +11,7 @@ export default function App() {
   const { user, profile, loading, signOut } = useAuth()
   const [view,          setView]          = useState('user')
   const [conflictCount, setConflictCount] = useState(0)
+  const [reset,         setReset]         = useState(null) // { mode, email } while resetting
 
   const loadConflictCount = useCallback(async () => {
     if (!profile || (profile.role !== 'manager' && profile.role !== 'admin')) return
@@ -25,13 +27,26 @@ export default function App() {
 
   useEffect(() => { loadConflictCount() }, [loadConflictCount])
 
+  // Checked before the loading/auth gates: verifying the code signs the user
+  // in, and they must stay on this screen until the new password is saved.
+  if (reset) return (
+    <ResetPassword
+      mode={reset.mode}
+      initialEmail={reset.email}
+      onDone={() => setReset(null)}
+      onCancel={() => setReset(null)}
+    />
+  )
+
   if (loading) return (
     <CenteredCard>
       <Spinner /> Loading…
     </CenteredCard>
   )
 
-  if (!user) return <Login />
+  if (!user) return (
+    <Login onResetPassword={(mode, email) => setReset({ mode, email })} />
+  )
 
   if (!profile) {
     return (
