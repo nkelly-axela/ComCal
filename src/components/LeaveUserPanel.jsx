@@ -59,6 +59,7 @@ export default function LeaveUserPanel({ userId, fullName }) {
   const rootRef = useRef(null)
 
   const [balances,   setBalances]   = useState([])
+  const [balancesLoaded, setBalancesLoaded] = useState(false)
   const [requests,   setRequests]   = useState([])
   const [leaveTypes, setLeaveTypes] = useState([])
   const [loading,    setLoading]    = useState(true)
@@ -119,8 +120,18 @@ export default function LeaveUserPanel({ userId, fullName }) {
       .order('notes', { nullsFirst: true })
       .order('leave_type', { ascending: true })
     if (error) showToast(error.message, 'error')
-    else setBalances(data ?? [])
+    else {
+      setBalances(data ?? [])
+      setBalancesLoaded(true)
+    }
   }, [userId, holidayYear])
+
+  // New starters can't book leave until an admin has seeded their allowance
+  // (Admin → Overview → Seed allowances). Only applies when they have NO
+  // allowance at all this holiday year, so seeded staff can still request
+  // types that deliberately have no allowance (e.g. sick leave). If balances
+  // fail to load we don't block.
+  const noAllowance = balancesLoaded && balances.length === 0
 
   const loadRequests = useCallback(async () => {
     const { data, error } = await supabase
@@ -191,6 +202,7 @@ export default function LeaveUserPanel({ userId, fullName }) {
 
   // ── Submit ────────────────────────────────────────────────────
   const submitRequest = async () => {
+    if (noAllowance) { showToast(NO_ALLOWANCE_MSG, 'error'); return }
     if (!form.typeId) { showToast('Pick a leave type', 'error'); return }
 
     if (form.isHourly) {
@@ -401,7 +413,7 @@ export default function LeaveUserPanel({ userId, fullName }) {
                 : 'Loading holiday year…'}
             </div>
           </div>
-          <Btn variant="primary" size="sm" onClick={() => {
+          <Btn variant="primary" size="sm" disabled={noAllowance} onClick={() => {
             setForm({ typeId:leaveTypes[0]?.id??'', start:'', end:'', reason:'', isHourly:false, hours:'1', hourDate:'' })
             setConflicts([])
             setReqModal(true)
@@ -413,7 +425,9 @@ export default function LeaveUserPanel({ userId, fullName }) {
           {loading || holidayYear == null
             ? <div style={{ color:'#9ca3af', fontSize:13 }}>Loading balances…</div>
             : balances.length === 0
-              ? <div style={{ color:'#9ca3af', fontSize:13 }}>No allowances seeded for this holiday year yet. Ask an admin to run the seed.</div>
+              ? <div style={{ gridColumn:'1 / -1', fontSize:13, color:'#854F0B', background:'#FAEEDA', border:'0.5px solid #F5C98B', borderRadius:8, padding:'0.75rem 1rem' }}>
+                  {NO_ALLOWANCE_MSG}
+                </div>
               : balances.map(b => <BalanceCard key={b.id ?? `${b.leave_type_id}-${b.year}-${b.notes ?? 'std'}`} b={b} />)}
         </div>
 
@@ -652,6 +666,8 @@ const Badge = ({ children, variant='gray' }) => {
   const s = { green:{background:'#E1F5EE',color:'#0F6E56'}, amber:{background:'#FAEEDA',color:'#854F0B'}, gray:{background:'#F1EFE8',color:'#5F5E5A'}, red:{background:'#FCEBEB',color:'#A32D2D'}, blue:{background:'#E6F1FB',color:'#185FA5'} }
   return <span style={{ display:'inline-flex', alignItems:'center', padding:'2px 8px', borderRadius:20, fontSize:11, fontWeight:500, ...s[variant] }}>{children}</span>
 }
+
+const NO_ALLOWANCE_MSG = "Your leave allowance hasn't been set up yet, so you can't request leave. Please ask your admin to set it up."
 
 const Btn = ({ children, onClick, variant='default', size='md', disabled }) => {
   const base = { display:'inline-flex', alignItems:'center', gap:6, fontSize:size==='sm'?12:13, padding:size==='sm'?'0.3rem 0.65rem':'0.45rem 0.9rem', borderRadius:8, cursor:disabled?'not-allowed':'pointer', fontFamily:'inherit', transition:'all .15s', border:'0.5px solid #d1d5db', opacity:disabled?0.5:1 }
