@@ -37,6 +37,7 @@ leave-management/
     │   └── useAuth.js                  # Session + profile lookup
     └── components/
         ├── Login.jsx
+        ├── ResetPassword.jsx           # Reset / invite: 6-digit code + new password
         ├── LeaveUserPanel.jsx
         ├── LeaveAdminPanel.jsx
         └── LeaveCalendar.jsx
@@ -107,8 +108,39 @@ values ('<auth-user-uuid>', 'Sarah Johnson', 'employee', 'Engineering');
 4. In Supabase: **Authentication → URL Configuration**:
    - **Site URL** = your Vercel production domain.
    - **Redirect URLs** = your production URL plus `https://*.vercel.app/*` if you want preview deployments to handle auth flows.
+5. In Supabase: set up password-reset codes — see *Password reset & invites* below.
 
 That's it. There are no Vercel serverless functions in this project — it's a pure static SPA that talks to Supabase from the browser.
+
+## Password reset & invites
+
+Password resets and invites use a **6-digit code** sent by email, not a link. Links get opened (and used up) by email security scanners such as Outlook Safe Links before the person clicks them. A code can't be used up that way, and it also works when the email is read on a phone but ComCal is open on a desktop.
+
+- **Forgot password?** Enter your email → get a code → enter the code plus your new password (twice, at least 8 characters) → signed in.
+- **Have an invite code?** For new starters invited from the Supabase dashboard. Enter your email, the code from the invite and a password. If the invite has expired, the screen offers to send a normal reset code instead.
+
+**Supabase setup (one-off):**
+
+1. **Authentication → Providers → Email → Email OTP Length** = `6`. (Email OTP Expiration controls how long codes last; the default is 1 hour.)
+2. **Authentication → Email Templates → Reset Password**: replace the link with the code, e.g.
+
+   ```html
+   <h2>Reset your ComCal password</h2>
+   <p>Your code is:</p>
+   <p style="font-size:24px;font-weight:bold;letter-spacing:4px">{{ .Token }}</p>
+   <p>Enter it on the ComCal sign-in page under "Forgot password?". It expires in 1 hour.</p>
+   <p>If you didn't ask for this, you can ignore this email.</p>
+   ```
+
+3. **Authentication → Email Templates → Invite user**: same idea, e.g.
+
+   ```html
+   <h2>You've been invited to ComCal</h2>
+   <p>Go to {{ .SiteURL }}, click "Have an invite code?" and enter:</p>
+   <p style="font-size:24px;font-weight:bold;letter-spacing:4px">{{ .Token }}</p>
+   ```
+
+Remove `{{ .ConfirmationURL }}` from both templates. If it's left in, clicking it signs the person in without setting a password.
 
 ## Roles
 
