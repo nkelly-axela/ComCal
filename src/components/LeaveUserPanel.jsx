@@ -60,6 +60,7 @@ export default function LeaveUserPanel({ userId, fullName }) {
 
   const [balances,   setBalances]   = useState([])
   const [balancesLoaded, setBalancesLoaded] = useState(false)
+  const [extras,     setExtras]     = useState([]) // extra days granted on top of the base
   const [requests,   setRequests]   = useState([])
   const [leaveTypes, setLeaveTypes] = useState([])
   const [loading,    setLoading]    = useState(true)
@@ -124,6 +125,13 @@ export default function LeaveUserPanel({ userId, fullName }) {
       setBalances(data ?? [])
       setBalancesLoaded(true)
     }
+    // Errors (e.g. before migration_17) just mean no breakdown is shown.
+    const { data: ex } = await supabase
+      .from('leave_allowance_extras')
+      .select('leave_type_id,days,reason,from_year,to_year')
+      .eq('user_id', userId)
+      .lte('from_year', holidayYear)
+    setExtras((ex ?? []).filter(x => x.to_year == null || x.to_year >= holidayYear))
   }, [userId, holidayYear])
 
   // New starters can't book leave until an admin has seeded their allowance
@@ -428,7 +436,10 @@ export default function LeaveUserPanel({ userId, fullName }) {
               ? <div style={{ gridColumn:'1 / -1', fontSize:13, color:'#854F0B', background:'#FAEEDA', border:'0.5px solid #F5C98B', borderRadius:8, padding:'0.75rem 1rem' }}>
                   {NO_ALLOWANCE_MSG}
                 </div>
-              : balances.map(b => <BalanceCard key={b.id ?? `${b.leave_type_id}-${b.year}-${b.notes ?? 'std'}`} b={b} />)}
+              : balances.map(b => (
+                  <BalanceCard key={b.id ?? `${b.leave_type_id}-${b.year}-${b.notes ?? 'std'}`} b={b}
+                    extras={b.notes && b.notes.includes('Rollover from') ? [] : extras.filter(x => x.leave_type_id === b.leave_type_id)} />
+                ))}
         </div>
 
         {/* Requests table */}
@@ -619,7 +630,7 @@ export default function LeaveUserPanel({ userId, fullName }) {
 
 // ─── Local primitives ─────────────────────────────────────────
 
-function BalanceCard({ b }) {
+function BalanceCard({ b, extras = [] }) {
   const pct  = b.total_days > 0 ? Math.round((b.used_days/b.total_days)*100) : 0
   const fill = pct>80?'#E24B4A':pct>50?'#EF9F27':'#1D9E75'
   const isRollover = b.notes && b.notes.includes('Rollover from')
@@ -656,6 +667,11 @@ function BalanceCard({ b }) {
           </span>
         )}
       </div>
+      {extras.length > 0 && (
+        <div style={{ fontSize:11, color:'#6b7280', marginTop:6, borderTop:'0.5px solid #e5e7eb', paddingTop:6 }}>
+          Includes {extras.map(x => `${x.days > 0 ? '+' : ''}${x.days} ${x.reason}`).join(', ')}
+        </div>
+      )}
     </div>
   )
 }

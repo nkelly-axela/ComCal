@@ -12,6 +12,16 @@
  * FUNCTIONS USED:
  *   - seed_annual_allowances(year, admin_uuid)
  *   - adjust_allowance(user_id, leave_type_id, year, new_total, performed_by, note)
+ *   - sync_leave_type_allowances(leave_type_id, from_year, old_days, performed_by, apply)
+ *   - add_allowance_extra / remove_allowance_extra / set_allowance_base
+ *
+ * A leave type's days (leave_types.max_days_per_year) are the single
+ * source of truth. The company-wide entitlement row is a copy kept in
+ * step by a trigger (migration_16).
+ *
+ * A person's allowance total is base + extras (migration_17). Extra
+ * days live in leave_allowance_extras with a reason; total_days is
+ * worked out by the database, never typed in.
  * ─────────────────────────────────────────────────────────────
  */
 
@@ -201,14 +211,20 @@ export default function LeaveAdminPanel() {
 
   const [entitlements, setEntitlements] = useState([])
   const [entModal, setEntModal] = useState(false)
-  const [entForm, setEntForm] = useState({ typeId: '', role: '', days: '' })
+  const [entForm, setEntForm] = useState({ typeId: '', role: 'employee', days: '' })
+  const [syncPrompt, setSyncPrompt] = useState(null) // { typeId, typeName, oldDays, newDays, rows } after a leave type's days change
+  const [syncBusy, setSyncBusy] = useState(false)
 
   const [allowances, setAllowances] = useState([])
   const [alYear, setAlYear] = useState(currentYear) // updated to holidayYearLabel after load
   const [alSearch, setAlSearch] = useState('') // employee search (name/email)
   const [alModal, setAlModal] = useState(false)
-  const [alEditing, setAlEditing] = useState(null)
-  const [alForm, setAlForm] = useState({ userId: '', typeId: '', year: currentYear, total: '', note: '' })
+  const [alForm, setAlForm] = useState({ userId: '', typeId: '', year: currentYear, total: '' })
+  const [extras, setExtras] = useState([]) // leave_allowance_extras, all users
+  const [adjustTarget, setAdjustTarget] = useState(null) // allowance row being adjusted
+  const [baseForm, setBaseForm] = useState('')
+  const [extraForm, setExtraForm] = useState({ days: '', reason: '', recurring: false })
+  const [adjustBusy, setAdjustBusy] = useState(false)
   const [rolloverModal, setRolloverModal] = useState(null) // admin: view an employee's rollover detail
   const [employees, setEmployees] = useState([])
 
@@ -876,6 +892,9 @@ export default function LeaveAdminPanel() {
         .from('users').select('id').not('deleted_at', 'is', null)
       const deletedIds = new Set((deleted ?? []).map(u => u.id))
       setAllowances((data ?? []).filter(a => !deletedIds.has(a.user_id)))
+      // Errors (e.g. before migration_17) just mean no extras are shown.
+      const { data: ex } = await supabase.from('leave_allowance_extras').select('*').order('created_at')
+      setExtras(ex ?? [])
     } catch (e) {
       showToast(e.message, 'error')
     }
@@ -937,11 +956,13 @@ export default function LeaveAdminPanel() {
 
   const saveLeaveType = async () => {
     if (!ltForm.name.trim()) return
+    const newDays = ltForm.days === '' ? null : +ltForm.days
+    const oldDays = ltEditing ? leaveTypes.find(l => l.id === ltEditing)?.max_days_per_year ?? null : null
     try {
       if (ltEditing) {
         const { error } = await supabase.from('leave_types').update({
           name: ltForm.name,
-          max_days_per_year: ltForm.days ? +ltForm.days : null,
+          max_days_per_year: newDays,
           color: ltForm.color,
           requires_approval: ltForm.approval,
           rollover_eligible: ltForm.rollover,
@@ -951,7 +972,7 @@ export default function LeaveAdminPanel() {
       } else {
         const { error } = await supabase.from('leave_types').insert({
           name: ltForm.name,
-          max_days_per_year: ltForm.days ? +ltForm.days : null,
+          max_days_per_year: newDays,
           color: ltForm.color,
           requires_approval: ltForm.approval,
           rollover_eligible: ltForm.rollover,
@@ -961,9 +982,50 @@ export default function LeaveAdminPanel() {
       }
       setLtModal(false)
       setLtEditing(null)
-      await loadLeaveTypes()
+      await Promise.all([loadLeaveTypes(), loadEntitlements()])
+      if (ltEditing && oldDays != null && newDays != null && oldDays !== newDays) {
+        await offerAllowanceSync(ltEditing, ltForm.name, oldDays, newDays)
+      }
     } catch (e) {
       showToast(e.message, 'error')
+    }
+  }
+
+  // After a leave type's days change, show who already has an allowance
+  // on the old value and offer to move them to the new one.
+  const offerAllowanceSync = async (typeId, typeName, oldDays, newDays) => {
+    const { data, error } = await supabase.rpc('sync_leave_type_allowances', {
+      p_leave_type_id: typeId,
+      p_from_year:     holidayYearLabel,
+      p_old_days:      oldDays,
+      p_performed_by:  null,
+      p_apply:         false,
+    })
+    if (error) { showToast(error.message, 'error'); return }
+    const rows = data ?? []
+    if (rows.some(r => r.status !== 'custom')) setSyncPrompt({ typeId, typeName, oldDays, newDays, rows })
+  }
+
+  const applyAllowanceSync = async () => {
+    setSyncBusy(true)
+    try {
+      const { data: { user } } = await supabase.auth.getUser()
+      const { data, error } = await supabase.rpc('sync_leave_type_allowances', {
+        p_leave_type_id: syncPrompt.typeId,
+        p_from_year:     holidayYearLabel,
+        p_old_days:      syncPrompt.oldDays,
+        p_performed_by:  user?.id,
+        p_apply:         true,
+      })
+      if (error) throw error
+      const updated = (data ?? []).filter(r => r.status === 'update').length
+      showToast(`Updated ${updated} ${syncPrompt.typeName} allowance${updated === 1 ? '' : 's'} to ${syncPrompt.newDays} days`)
+      setSyncPrompt(null)
+      await loadAllowances(alYear)
+    } catch (e) {
+      showToast(e.message, 'error')
+    } finally {
+      setSyncBusy(false)
     }
   }
 
@@ -984,7 +1046,7 @@ export default function LeaveAdminPanel() {
     try {
       const { error } = await supabase.from('leave_type_entitlements').upsert({
         leave_type_id: entForm.typeId,
-        role: entForm.role || null,
+        role: entForm.role,
         default_days: +entForm.days,
       }, { onConflict: 'leave_type_id,role' })
       if (error) throw error
@@ -1010,36 +1072,83 @@ export default function LeaveAdminPanel() {
   const saveAllowance = async () => {
     if (!alForm.userId || !alForm.typeId || !alForm.total) return
     try {
-      if (alEditing) {
-        const { data: { user } } = await supabase.auth.getUser()
-        const { error } = await supabase.rpc('adjust_allowance', {
-          p_user_id: alForm.userId,
-          p_leave_type_id: alForm.typeId,
-          p_year: alForm.year,
-          p_new_total: +alForm.total,
-          p_performed_by: user?.id,
-          p_note: alForm.note || null,
-        })
-        if (error) throw error
-        showToast('Allowance adjusted')
-      } else {
-        const { error } = await supabase.from('leave_allowances').insert({
-          user_id: alForm.userId,
-          leave_type_id: alForm.typeId,
-          year: alForm.year,
-          total_days: +alForm.total,
-          used_days: 0,
-        })
-        if (error) throw error
-        showToast('Allowance added')
-      }
+      // total_days here is the base; the database adds any extras.
+      const { error } = await supabase.from('leave_allowances').insert({
+        user_id: alForm.userId,
+        leave_type_id: alForm.typeId,
+        year: alForm.year,
+        total_days: +alForm.total,
+        used_days: 0,
+      })
+      if (error) throw error
+      showToast('Allowance added')
       setAlModal(false)
-      setAlEditing(null)
       await loadAllowances(alYear)
     } catch (e) {
       showToast(e.message, 'error')
     }
   }
+
+  // Extras that apply to one person / leave type / holiday year.
+  const extrasFor = (userId, typeId, year) => extras.filter(x =>
+    x.user_id === userId && x.leave_type_id === typeId &&
+    x.from_year <= year && (x.to_year == null || x.to_year >= year))
+
+  // What someone gets before extras: their role's rule, else the leave type's days.
+  const defaultDaysFor = (role, typeId) =>
+    entitlements.find(e => e.leave_type_id === typeId && e.role === role)?.default_days
+      ?? leaveTypes.find(l => l.id === typeId)?.max_days_per_year ?? null
+
+  const openAdjust = (a) => {
+    const extraTotal = extrasFor(a.user_id, a.leave_type_id, a.year).reduce((n, x) => n + +x.days, 0)
+    setAdjustTarget(a)
+    setBaseForm(String(+a.total_days - extraTotal))
+    setExtraForm({ days: '', reason: '', recurring: false })
+  }
+
+  // Runs an allowance RPC, then refreshes and keeps the adjust modal on the same row.
+  const runAdjust = async (fn, args, message) => {
+    setAdjustBusy(true)
+    try {
+      const { data: { user } } = await supabase.auth.getUser()
+      const { error } = await supabase.rpc(fn, { ...args, p_performed_by: user?.id })
+      if (error) throw error
+      showToast(message)
+      await loadAllowances(alYear)
+      return true
+    } catch (e) {
+      showToast(e.message, 'error')
+      return false
+    } finally {
+      setAdjustBusy(false)
+    }
+  }
+
+  const saveBase = () => runAdjust('set_allowance_base', {
+    p_user_id: adjustTarget.user_id,
+    p_leave_type_id: adjustTarget.leave_type_id,
+    p_year: adjustTarget.year,
+    p_base_days: +baseForm,
+    p_note: null,
+  }, 'Base updated')
+
+  const addExtra = async () => {
+    if (!extraForm.days || +extraForm.days === 0 || !extraForm.reason.trim()) return
+    const ok = await runAdjust('add_allowance_extra', {
+      p_user_id: adjustTarget.user_id,
+      p_leave_type_id: adjustTarget.leave_type_id,
+      p_days: +extraForm.days,
+      p_reason: extraForm.reason,
+      p_from_year: adjustTarget.year,
+      p_recurring: extraForm.recurring,
+    }, 'Extra days added')
+    if (ok) setExtraForm({ days: '', reason: '', recurring: false })
+  }
+
+  const removeExtra = (x) => runAdjust('remove_allowance_extra', {
+    p_extra_id: x.id,
+    p_from_year: adjustTarget.year,
+  }, 'Extra days removed')
 
   const seedAllowances = async () => {
     setSeedLoading(true)
@@ -1793,11 +1902,10 @@ export default function LeaveAdminPanel() {
 
               <Table headers={['Type', 'Default days', 'Approval', 'Status']} empty="No leave types configured">
                 {leaveTypes.map(lt => {
-                  const ent = entitlements.find(e => e.leave_type_id === lt.id && !e.role)
                   return (
                     <TR key={lt.id}>
                       <TD><Swatch color={lt.color} />{lt.name}</TD>
-                      <TD>{ent ? `${ent.default_days} days` : <Badge variant="amber">No default</Badge>}</TD>
+                      <TD>{lt.max_days_per_year != null ? `${lt.max_days_per_year} days` : <Badge variant="amber">No default</Badge>}</TD>
                       <TD><Badge variant={lt.requires_approval ? 'blue' : 'gray'}>{lt.requires_approval ? 'Yes' : 'No'}</Badge></TD>
                       <TD><Badge variant="green">Active</Badge></TD>
                     </TR>
@@ -1886,7 +1994,7 @@ export default function LeaveAdminPanel() {
                 }}>+ Add type</Btn>
               </div>
 
-              <Table headers={['Name', 'Colour', 'Max days/yr', 'Requires approval', 'Rollover', 'Actions']} empty="No leave types yet">
+              <Table headers={['Name', 'Colour', 'Days/yr', 'Requires approval', 'Rollover', 'Actions']} empty="No leave types yet">
                 {leaveTypes.map(lt => (
                   <TR key={lt.id}>
                     <TD><span style={{ fontWeight: 500 }}>{lt.name}</span></TD>
@@ -1944,7 +2052,7 @@ export default function LeaveAdminPanel() {
                 ))}
               </Table>
               <p style={{ fontSize: 12, color: '#9ca3af', marginTop: '0.75rem' }}>
-                Changes here update <code>leave_types</code> and <code>leave_type_entitlements</code> in Supabase.
+                Days / year is the company-wide default for each type. It's the value used when allowances are seeded; change it here and you'll be offered to update people's existing allowances.
               </p>
             </div>
           )}
@@ -1957,13 +2065,13 @@ export default function LeaveAdminPanel() {
                   <div style={{ fontSize: 13, color: '#6b7280', marginTop: 2 }}>Default days granted per leave type, with optional role overrides</div>
                 </div>
                 <Btn variant="primary" size="sm" onClick={() => {
-                  setEntForm({ typeId: leaveTypes[0]?.id ?? '', role: '', days: '' })
+                  setEntForm({ typeId: leaveTypes[0]?.id ?? '', role: 'employee', days: '' })
                   setEntModal(true)
                 }}>+ Add rule</Btn>
               </div>
 
               <div style={{ fontSize: 12, color: '#6b7280', background: '#f9fafb', borderRadius: 8, padding: '0.6rem 0.85rem', marginBottom: '1rem', border: '0.5px solid #e5e7eb' }}>
-                Role-specific rules override company-wide defaults. <strong>No role</strong> = applies to everyone.
+                Role-specific rules override company-wide defaults. The <strong>Everyone</strong> default comes from the leave type's days / year. Change it on the Leave types tab.
               </div>
 
               <Table headers={['Leave type', 'Applies to', 'Days', 'Actions']} empty="No entitlement rules yet">
@@ -1980,7 +2088,9 @@ export default function LeaveAdminPanel() {
                     </TD>
                     <TD><strong>{e.default_days}</strong> days</TD>
                     <TD>
-                      <Btn size="sm" variant="danger" onClick={() => deleteEntitlement(e.id)}>Remove</Btn>
+                      {e.role
+                        ? <Btn size="sm" variant="danger" onClick={() => deleteEntitlement(e.id)}>Remove</Btn>
+                        : <Btn size="sm" onClick={() => setTab('leave-types')}>Edit on Leave types</Btn>}
                     </TD>
                   </TR>
                 ))}
@@ -2016,7 +2126,7 @@ export default function LeaveAdminPanel() {
                   </select>
                   <Btn variant="primary" size="sm" onClick={() => {
                     setAlEditing(null)
-                    setAlForm({ userId: employees[0]?.id ?? '', typeId: leaveTypes[0]?.id ?? '', year: alYear, total: '', note: '' })
+                    setAlForm({ userId: employees[0]?.id ?? '', typeId: leaveTypes[0]?.id ?? '', year: alYear, total: '' })
                     setAlModal(true)
                   }}>+ Add allowance</Btn>
                 </div>
@@ -2040,7 +2150,15 @@ export default function LeaveAdminPanel() {
                       <div style={{ fontSize: 11, color: '#9ca3af' }}>{a.role}</div>
                     </TD>
                     <TD><Swatch color={a.color} />{a.leave_type}</TD>
-                    <TD>{a.total_days} days</TD>
+                    <TD>
+                      {a.total_days} days
+                      {(() => {
+                        const ex = extrasFor(a.user_id, a.leave_type_id, a.year)
+                        if (!ex.length) return null
+                        const sum = ex.reduce((n, x) => n + +x.days, 0)
+                        return <div style={{ fontSize: 11, color: '#9ca3af' }}>{a.total_days - sum} {sum > 0 ? '+' : '−'} {Math.abs(sum)} extra</div>
+                      })()}
+                    </TD>
                     <TD><ProgressBar used={a.used_days} total={a.total_days} /></TD>
                     <TD>
                       <strong style={{ color: a.remaining_days < 3 ? '#991b1b' : '#111' }}>
@@ -2049,11 +2167,7 @@ export default function LeaveAdminPanel() {
                     </TD>
                     <TD>
                       <div style={{ display: 'flex', gap: 6 }}>
-                        <Btn size="sm" onClick={() => {
-                          setAlEditing(a.id)
-                          setAlForm({ userId: a.user_id, typeId: a.leave_type_id, year: a.year, total: a.total_days, note: '' })
-                          setAlModal(true)
-                        }}>Adjust</Btn>
+                        <Btn size="sm" onClick={() => openAdjust(a)}>Adjust</Btn>
                         {rollovers.length > 0 && (
                           <Btn size="sm" onClick={() => setRolloverModal(a)}>↩ Rollover</Btn>
                         )}
@@ -2080,7 +2194,7 @@ export default function LeaveAdminPanel() {
           <input style={inputStyle} value={ltForm.name} onChange={e => setLtForm(f => ({ ...f, name: e.target.value }))} placeholder="e.g. Paternity Leave" />
         </Field>
         <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
-          <Field label="Max days / year">
+          <Field label="Days / year (default allowance)">
             <input style={inputStyle} type="number" min="0" value={ltForm.days} onChange={e => setLtForm(f => ({ ...f, days: e.target.value }))} placeholder="e.g. 25" />
           </Field>
           <Field label="Colour">
@@ -2105,6 +2219,53 @@ export default function LeaveAdminPanel() {
         </div>
       </Modal>
 
+      <Modal open={!!syncPrompt} onClose={() => !syncBusy && setSyncPrompt(null)} title="Update existing allowances?">
+        {syncPrompt && (() => {
+          const toUpdate = syncPrompt.rows.filter(r => r.status === 'update')
+          const overused = syncPrompt.rows.filter(r => r.status === 'overused')
+          const custom   = syncPrompt.rows.filter(r => r.status === 'custom')
+          const listStyle = { fontSize: 12, color: '#6b7280', margin: '0.35rem 0 0.85rem', paddingLeft: '1.1rem', maxHeight: 120, overflowY: 'auto' }
+          return (
+            <div style={{ fontSize: 13 }}>
+              <p style={{ marginBottom: '0.85rem' }}>
+                {syncPrompt.typeName} is now <strong>{syncPrompt.newDays} days</strong> (was {syncPrompt.oldDays}).
+                New allowances will use {syncPrompt.newDays}.
+              </p>
+              {toUpdate.length > 0 && (
+                <p style={{ marginBottom: '0.85rem' }}>
+                  <strong>{toUpdate.length}</strong> {toUpdate.length === 1 ? 'person has' : 'people have'} {syncPrompt.oldDays} days
+                  from holiday year {holidayYearLabel} onwards. Update them to {syncPrompt.newDays}? Any extra days they've been given stay on top, days already used stay counted, and each change is recorded in the audit log.
+                </p>
+              )}
+              {overused.length > 0 && (
+                <>
+                  <div style={{ color: '#991b1b' }}>Won't be changed. They've already used more than {syncPrompt.newDays} days:</div>
+                  <ul style={listStyle}>
+                    {overused.map(r => <li key={r.user_id + r.year}>{r.full_name}: {r.used_days} used ({r.year})</li>)}
+                  </ul>
+                </>
+              )}
+              {custom.length > 0 && (
+                <>
+                  <div>Won't be changed. They have a custom base (e.g. part-time):</div>
+                  <ul style={listStyle}>
+                    {custom.map(r => <li key={r.user_id + r.year}>{r.full_name}: base {r.base_days} days ({r.year})</li>)}
+                  </ul>
+                </>
+              )}
+              <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', borderTop: '0.5px solid #e5e7eb', paddingTop: '1rem' }}>
+                <Btn size="sm" disabled={syncBusy} onClick={() => setSyncPrompt(null)}>{toUpdate.length ? 'Not now' : 'Close'}</Btn>
+                {toUpdate.length > 0 && (
+                  <Btn size="sm" variant="primary" disabled={syncBusy} onClick={applyAllowanceSync}>
+                    {syncBusy ? 'Updating…' : `Update ${toUpdate.length}`}
+                  </Btn>
+                )}
+              </div>
+            </div>
+          )
+        })()}
+      </Modal>
+
       <Modal open={entModal} onClose={() => setEntModal(false)} title="Add entitlement rule">
         <Field label="Leave type">
           <select style={selectStyle} value={entForm.typeId} onChange={e => setEntForm(f => ({ ...f, typeId: e.target.value }))}>
@@ -2113,13 +2274,12 @@ export default function LeaveAdminPanel() {
         </Field>
         <Field label="Applies to">
           <select style={selectStyle} value={entForm.role} onChange={e => setEntForm(f => ({ ...f, role: e.target.value }))}>
-            <option value="">Everyone (company default)</option>
             <option value="employee">Employees only</option>
             <option value="manager">Managers only</option>
             <option value="admin">Admins only</option>
           </select>
         </Field>
-        <Field label="Default days">
+        <Field label="Days">
           <input style={inputStyle} type="number" min="0" step="0.5" value={entForm.days} onChange={e => setEntForm(f => ({ ...f, days: e.target.value }))} placeholder="e.g. 25" />
         </Field>
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', borderTop: '0.5px solid #e5e7eb', paddingTop: '1rem' }}>
@@ -2128,7 +2288,7 @@ export default function LeaveAdminPanel() {
         </div>
       </Modal>
 
-      <Modal open={alModal} onClose={() => setAlModal(false)} title={alEditing ? 'Adjust allowance' : 'Add allowance'}>
+      <Modal open={alModal} onClose={() => setAlModal(false)} title="Add allowance">
         <Field label="Employee">
           <select style={selectStyle} value={alForm.userId} onChange={e => setAlForm(f => ({ ...f, userId: e.target.value }))}>
             {employees.map(e => <option key={e.id} value={e.id}>{e.full_name}</option>)}
@@ -2143,17 +2303,93 @@ export default function LeaveAdminPanel() {
           <Field label="Year">
             <input style={inputStyle} type="number" min="2020" max="2030" value={alForm.year} onChange={e => setAlForm(f => ({ ...f, year: +e.target.value }))} />
           </Field>
-          <Field label="Total days">
+          <Field label="Base days">
             <input style={inputStyle} type="number" min="0" step="0.5" value={alForm.total} onChange={e => setAlForm(f => ({ ...f, total: e.target.value }))} />
           </Field>
         </div>
-        <Field label="Note (optional)">
-          <input style={inputStyle} value={alForm.note} onChange={e => setAlForm(f => ({ ...f, note: e.target.value }))} placeholder="e.g. Long service award +3 days" />
-        </Field>
+        <p style={{ fontSize: 12, color: '#6b7280', margin: '0 0 0.85rem' }}>
+          Normally the leave type's days / year. For extra days, add the allowance and then use Adjust.
+        </p>
         <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end', borderTop: '0.5px solid #e5e7eb', paddingTop: '1rem' }}>
           <Btn size="sm" onClick={() => setAlModal(false)}>Cancel</Btn>
           <Btn size="sm" variant="primary" onClick={saveAllowance}>Save allowance</Btn>
         </div>
+      </Modal>
+
+      {/* ── Adjust one person's allowance: base + extras ── */}
+      <Modal open={!!adjustTarget} onClose={() => !adjustBusy && setAdjustTarget(null)} title="Adjust allowance">
+        {adjustTarget && (() => {
+          // Re-read the row after each change so totals stay current.
+          const a = allowances.find(r => r.id === adjustTarget.id) ?? adjustTarget
+          const ex = extrasFor(a.user_id, a.leave_type_id, a.year)
+          const extraTotal = ex.reduce((n, x) => n + +x.days, 0)
+          const base = +a.total_days - extraTotal
+          const def = defaultDaysFor(a.role, a.leave_type_id)
+          const sectionLabel = { fontSize: 12, color: '#6b7280', marginBottom: 6 }
+          return (
+            <div style={{ fontSize: 13 }}>
+              <div style={{ marginBottom: '1rem' }}>
+                <strong>{a.full_name}</strong> · <Swatch color={a.color} />{a.leave_type} · Holiday year {a.year}
+                <div style={{ fontSize: 12, color: '#6b7280', marginTop: 4 }}>
+                  Total <strong style={{ color: '#111' }}>{a.total_days} days</strong>
+                  {' '}= {base} base{extraTotal !== 0 && ` ${extraTotal > 0 ? '+' : '−'} ${Math.abs(extraTotal)} extra`} · {a.used_days} used
+                </div>
+              </div>
+
+              <div style={sectionLabel}>Extra days</div>
+              {ex.length === 0
+                ? <div style={{ fontSize: 12, color: '#9ca3af', marginBottom: '0.75rem' }}>None</div>
+                : (
+                  <div style={{ marginBottom: '0.75rem' }}>
+                    {ex.map(x => (
+                      <div key={x.id} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, padding: '0.35rem 0', borderBottom: '0.5px solid #f3f4f6' }}>
+                        <div>
+                          <strong>{x.days > 0 ? '+' : ''}{x.days}</strong> · {x.reason}
+                          <div style={{ fontSize: 11, color: '#9ca3af' }}>
+                            {x.to_year == null ? `Every year from ${x.from_year}` : x.from_year === x.to_year ? `${x.from_year} only` : `${x.from_year}–${x.to_year}`}
+                          </div>
+                        </div>
+                        <Btn size="sm" variant="danger" disabled={adjustBusy} onClick={() => removeExtra(x)}>
+                          {x.from_year < a.year ? `Stop from ${a.year}` : 'Remove'}
+                        </Btn>
+                      </div>
+                    ))}
+                  </div>
+                )}
+
+              <div style={{ display: 'grid', gridTemplateColumns: '80px 1fr', gap: 8 }}>
+                <input style={inputStyle} type="number" step="0.5" placeholder="+2" value={extraForm.days}
+                  onChange={e => setExtraForm(f => ({ ...f, days: e.target.value }))} />
+                <input style={inputStyle} placeholder="Reason, e.g. Long service" value={extraForm.reason}
+                  onChange={e => setExtraForm(f => ({ ...f, reason: e.target.value }))} />
+              </div>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8, margin: '0.5rem 0 1.25rem' }}>
+                <select style={{ ...selectStyle, width: 'auto' }} value={extraForm.recurring ? 'y' : 'n'}
+                  onChange={e => setExtraForm(f => ({ ...f, recurring: e.target.value === 'y' }))}>
+                  <option value="n">{a.year} only</option>
+                  <option value="y">Every year from {a.year}</option>
+                </select>
+                <Btn size="sm" variant="primary" disabled={adjustBusy || !extraForm.days || +extraForm.days === 0 || !extraForm.reason.trim()} onClick={addExtra}>Add extra days</Btn>
+              </div>
+
+              <div style={sectionLabel}>Base days</div>
+              <div style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                <input style={{ ...inputStyle, width: 90 }} type="number" min="0" step="0.5" value={baseForm}
+                  onChange={e => setBaseForm(e.target.value)} />
+                <Btn size="sm" disabled={adjustBusy || baseForm === '' || +baseForm === base} onClick={saveBase}>Save base</Btn>
+              </div>
+              <div style={{ fontSize: 11, color: '#9ca3af', marginTop: 4 }}>
+                {def != null && <>Default for this person is {def}. </>}
+                Only change the base for part-time or pro-rata. Use extra days for anything granted on top.
+                {def != null && base !== def && extraTotal === 0 && <> This base differs from the default. If that's an earlier grant, set the base to {def} and add the difference as extra days with its reason.</>}
+              </div>
+
+              <div style={{ display: 'flex', justifyContent: 'flex-end', borderTop: '0.5px solid #e5e7eb', paddingTop: '1rem', marginTop: '1rem' }}>
+                <Btn size="sm" disabled={adjustBusy} onClick={() => setAdjustTarget(null)}>Done</Btn>
+              </div>
+            </div>
+          )
+        })()}
       </Modal>
 
       {/* ── Rollover detail (admin, read-only) ── */}
