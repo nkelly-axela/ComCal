@@ -14,7 +14,7 @@ Built as a React single-page app on top of Supabase. No custom backend — the b
 
 - Email + password sign-in via Supabase Auth, with password-reset flow.
 - **My leave** — employees see their balances per leave type, request leave (with a live business-day count), and cancel pending requests.
-- **Team calendar** — everyone signed in can see approved leave across the team, grouped by department. Two views: a Gantt-style timeline (rows = people, cols = days) and a traditional 7-column month grid. Filter by department or leave type.
+- **Team calendar** — everyone signed in can see who is off and when, grouped by department. The type of leave (and its colour) shows only to admins and to the person themselves; others see "Absence" (migration_18). Two views: a Gantt-style timeline (rows = people, cols = days) and a traditional 7-column month grid. Filter by department or leave type.
 - **Admin** (managers + admins only) — manage leave types, role-based entitlements, and per-person allowances. Includes RPCs for seeding annual allowances and adjusting individual balances.
 
 ## Project structure
